@@ -1035,7 +1035,8 @@ static void do_subtitle_out(OutputFile *of,
 static void do_video_out(OutputFile *of,
                          OutputStream *ost,
                          AVFrame *next_picture,
-                         double sync_ipts)
+                         double sync_ipts,
+                         int eof)
 {
     int ret, format_video_sync;
     AVPacket pkt;
@@ -1067,7 +1068,7 @@ static void do_video_out(OutputFile *of,
         duration = lrintf(next_picture->pkt_duration * av_q2d(ist->st->time_base) / av_q2d(enc->time_base));
     }
 
-    if (!next_picture) {
+    if (eof) {
         //end, flushing
         nb0_frames = nb_frames = mid_pred(ost->last_nb0_frames[0],
                                           ost->last_nb0_frames[1],
@@ -1424,6 +1425,7 @@ static int reap_filters(int flush)
 {
     AVFrame *filtered_frame = NULL;
     int i;
+    float max_float_pts = 0.0;
 
     /* Reap all buffers present in the buffer sinks */
     for (i = 0; i < nb_output_streams; i++) {
@@ -1462,7 +1464,7 @@ static int reap_filters(int flush)
                            "Error in av_buffersink_get_frame_flags(): %s\n", av_err2str(ret));
                 } else if (flush && ret == AVERROR_EOF) {
                     if (av_buffersink_get_type(filter) == AVMEDIA_TYPE_VIDEO)
-                        do_video_out(of, ost, NULL, AV_NOPTS_VALUE);
+                        do_video_out(of, ost, NULL, AV_NOPTS_VALUE, 1);
                 }
                 break;
             }
@@ -1488,6 +1490,9 @@ static int reap_filters(int flush)
                     av_rescale_q(filtered_frame->pts, filter_tb, enc->time_base) -
                     av_rescale_q(start_time, AV_TIME_BASE_Q, enc->time_base);
             }
+
+            max_float_pts = FFMAX(float_pts, max_float_pts);
+
             //if (ost->source_index >= 0)
             //    *filtered_frame= *input_streams[ost->source_index]->decoded_frame; //for me_threshold
 
@@ -1503,7 +1508,7 @@ static int reap_filters(int flush)
                             enc->time_base.num, enc->time_base.den);
                 }
 
-                do_video_out(of, ost, filtered_frame, float_pts);
+                do_video_out(of, ost, filtered_frame, float_pts, filtered_frame == NULL);
                 break;
             case AVMEDIA_TYPE_AUDIO:
                 if (!(enc->codec->capabilities & AV_CODEC_CAP_PARAM_CHANGE) &&
@@ -1520,6 +1525,32 @@ static int reap_filters(int flush)
             }
 
             av_frame_unref(filtered_frame);
+        }
+    }
+
+    if (max_float_pts <= 0)
+        return 0;
+
+    for (i = 0; i < nb_output_streams; i++) {
+        OutputStream *ost = output_streams[i];
+        OutputFile    *of = output_files[ost->file_index];
+
+        if (!ost->filter || !ost->filter->graph->graph || ost->finished)
+            continue;
+
+        if (max_float_pts - ost->sync_opts < 2)
+            continue;
+
+        switch (av_buffersink_get_type(ost->filter->filter)) {
+        case AVMEDIA_TYPE_VIDEO:
+            do_video_out(of, ost, NULL, max_float_pts, 0);
+            break;
+        case AVMEDIA_TYPE_AUDIO:
+            // TODO support audio filters
+            break;
+        default:
+            // TODO support subtitle filters
+            av_assert0(0);
         }
     }
 
