@@ -144,6 +144,7 @@ struct CurlContext {
     char           *icy_metadata_headers; /* "Icy-*" reply headers (output) */
     char           *icy_metadata_packet;  /* last in-band block (output) */
     AVDictionary   *metadata;             /* ICY metadata (output) */
+    char           *reconnect_on_http_error;
 
     /* URL thread bookkeeping, not touched by loop thread */
     int64_t         logical_pos;    /* next byte url_read() will return, caller side */
@@ -248,9 +249,29 @@ static int curlmcode_to_curlcode(CURLMcode code)
     }
 }
 
-static int is_recoverable(CURLcode code)
+static int http_error_is_recoverable(CurlContext *c, int http_status)
+{
+    if (!c->reconnect_on_http_error || http_status <= 0 || http_status > 999)
+        return 0;
+
+    const char *status_group = NULL;
+    if (http_status >= 400 && http_status < 500)
+        status_group = "4xx";
+    else if (http_status >= 500 && http_status < 600)
+        status_group = "5xx";
+    if (status_group && av_match_list(status_group, c->reconnect_on_http_error, ',') > 0)
+        return 1;
+
+    char http_code[4];
+    snprintf(http_code, sizeof(http_code), "%d", http_status);
+    return av_match_list(http_code, c->reconnect_on_http_error, ',') > 0;
+}
+
+static int is_recoverable(CurlContext *c, CURLcode code, int http_status)
 {
     switch (code) {
+    case CURLE_OK:
+        return http_error_is_recoverable(c, http_status);
     case CURLE_RECV_ERROR:
     case CURLE_SEND_ERROR:
     case CURLE_PARTIAL_FILE:
@@ -1603,7 +1624,7 @@ static int libcurl_read(URLContext *h, unsigned char *buf, int size)
         }
 
         if (c->status) {
-            if (c->seekable && is_recoverable(c->curl_status))
+            if (c->seekable && is_recoverable(c, c->curl_status, c->http_status))
                 return retry_request_locked(h, nonblock);
             if (c->status == AVERROR_EOF && c->icy_block_len >= 0)
                 av_log(h, AV_LOG_WARNING,
@@ -1757,6 +1778,7 @@ static const AVOption options[] = {
         { "3",                 "HTTP/3, fall back to earlier versions", 0, AV_OPT_TYPE_CONST, { .i64 = CURL_HTTP_VERSION_3 },                   0, 0, D, .unit = "http_version" },
         { "3only",             "HTTP/3 only",                           0, AV_OPT_TYPE_CONST, { .i64 = CURL_HTTP_VERSION_3ONLY },               0, 0, D, .unit = "http_version" },
     { "short_seek_size", "threshold to favor readahead over seek", OFFSET(short_seek_size), AV_OPT_TYPE_INT64, { .i64 = 0 }, 0, INT64_MAX, D },
+    { "reconnect_on_http_error", "list of http status codes to reconnect on", OFFSET(reconnect_on_http_error), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, D },
     { NULL }
 };
 

@@ -1216,6 +1216,10 @@ connection may be closed and recreated for each subsequent initial request.
 Maximum number of retries after a recoverable error on a seekable transfer.
 Default is @code{5}.
 
+@item reconnect_on_http_error
+A comma separated list of HTTP status codes to reconnect on. The list can
+include specific status codes (e.g. '503') or the strings '4xx' / '5xx'.
+
 @item short_seek_size
 Set the threshold, in bytes, for when a readahead should be preferred over a seek and
 new HTTP request. This is useful, for example, to make sure the same connection
