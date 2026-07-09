@@ -1220,6 +1220,11 @@ Default is @code{5}.
 A comma separated list of HTTP status codes to reconnect on. The list can
 include specific status codes (e.g. '503') or the strings '4xx' / '5xx'.
 
+@item respect_retry_after
+If enabled, and a Retry-After header is encountered, its requested reconnection
+delay will be honored, rather than using exponential backoff. Useful for 429 and
+503 errors. Default enabled.
+
 @item short_seek_size
 Set the threshold, in bytes, for when a readahead should be preferred over a seek and
 new HTTP request. This is useful, for example, to make sure the same connection

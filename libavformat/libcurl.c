@@ -145,6 +145,7 @@ struct CurlContext {
     char           *icy_metadata_packet;  /* last in-band block (output) */
     AVDictionary   *metadata;             /* ICY metadata (output) */
     char           *reconnect_on_http_error;
+    int             respect_retry_after;
 
     /* URL thread bookkeeping, not touched by loop thread */
     int64_t         logical_pos;    /* next byte url_read() will return, caller side */
@@ -173,12 +174,13 @@ struct CurlContext {
     AVDictionary   *hdr_icy;           /* "Icy-*" headers of this block */
     int64_t         hdr_icy_metaint;   /* in-band metadata interval, or -1 */
 
-    /* Probe result. Set by the loop thread, read by url_open() once probed. */
+    /* Probe result. Set by the loop thread, read by URL thread once probed. */
     int             probed;
     int             probe_ok;    /* the first reply can be read */
     int             stream_ok;
     int             seekable;
     int64_t         content_size;
+    int64_t         retry_after; /* raw value returned by server, or 0 */
 
     /* Shared transfer state, guarded by mutex. */
     pthread_mutex_t mutex;
@@ -657,6 +659,10 @@ static size_t header_callback(char *ptr, size_t size, size_t nitems, void *userd
         c->loop->num_errors++;
         c->stream_ok = 0;
         update_status_locked(c, ff_http_averror(status, AVERROR(EIO)), CURLE_OK);
+
+        curl_off_t retry_after = 0;
+        curl_easy_getinfo(c->easy, CURLINFO_RETRY_AFTER, &retry_after);
+        c->retry_after = retry_after;
     }
     if (!c->probed) {
         c->probe_ok = c->stream_ok;
@@ -730,6 +736,7 @@ static void start_request(CurlContext *c)
     c->loop->num_requests++;
     c->request_received = 0;
     c->request_end = -1;
+    c->retry_after = 0;
     c->active = 1;
     CURLMcode res = curl_multi_add_handle(c->loop->multi, c->easy);
     if (res != CURLM_OK) {
@@ -1419,6 +1426,12 @@ static int wait_for_probe(CurlContext *c)
 /* Scales by the recurrence relationship x := 2x + 1, i.e. 2^n - 1 */
 static int64_t retry_delay(CurlContext *c)
 {
+    int64_t retry_after = c->retry_after;
+    if (c->respect_retry_after && retry_after > 0) {
+        retry_after = FFMIN(retry_after, CURL_RETRY_MAX_US / 1000000);
+        return retry_after * 1000000;
+    }
+
     int64_t factor = INT64_MAX >> FFMAX(63 - c->retry_count, 0);
     if (factor >= CURL_RETRY_MAX_US / CURL_RETRY_BASE_US)
         return CURL_RETRY_MAX_US;
@@ -1787,6 +1800,7 @@ static const AVOption options[] = {
         { "3only",             "HTTP/3 only",                           0, AV_OPT_TYPE_CONST, { .i64 = CURL_HTTP_VERSION_3ONLY },               0, 0, D, .unit = "http_version" },
     { "short_seek_size", "threshold to favor readahead over seek", OFFSET(short_seek_size), AV_OPT_TYPE_INT64, { .i64 = 0 }, 0, INT64_MAX, D },
     { "reconnect_on_http_error", "list of http status codes to reconnect on", OFFSET(reconnect_on_http_error), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, D },
+    { "respect_retry_after", "respect the Retry-After header when retrying connections", OFFSET(respect_retry_after), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, D },
     { NULL }
 };
 
