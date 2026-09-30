@@ -187,6 +187,7 @@ struct CurlContext {
     int             aborted;     /* transfer should stop (open was interrupted) */
     int             status;      /* current stream status (AVERROR code) */
     CURLcode        curl_status; /* corresponding libcurl status code */
+    int             http_status; /* HTTP response code of last request, or 0 */
     int64_t         icy_metaint; /* in-band metadata interval, 0 if none */
 };
 
@@ -551,6 +552,7 @@ static size_t header_callback(char *ptr, size_t size, size_t nitems, void *userd
         c->hdr_content_length = cl >= 0 ? cl : -1;
 
     pthread_mutex_lock(&c->mutex);
+    c->http_status = status;
     if (status >= 200 && status < 300) {
         int64_t content_start = status == 206 ? c->hdr_content_start : 0;
         int64_t content_end   = status == 206 ? c->hdr_content_end : -1;
@@ -878,6 +880,7 @@ static void execute_command(CurlLoop *loop, CurlCmd *cmd)
         c->paused = 0;
         c->status = 0;
         c->curl_status = 0;
+        c->http_status = 0;
         pthread_mutex_unlock(&c->mutex);
         c->request_start    = cmd->pos;
         c->request_received = 0;
