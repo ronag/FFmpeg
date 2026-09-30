@@ -1443,10 +1443,16 @@ static int retry_request_locked(URLContext *h, int nonblock)
         c->retry_time = av_gettime_relative() + delay;
         c->retry_count++;
 
+        char err[256];
+        if (code == CURLE_OK) {
+            snprintf(err, sizeof(err), "%s", av_err2str(status));
+        } else {
+            snprintf(err, sizeof(err), "%s (%s)", av_err2str(status),
+                     curl_easy_strerror(code));
+        }
+
         av_log(h, AV_LOG_WARNING, "Retrying (#%d) from %"PRId64" in %.3fs "
-               "after: %s (%s)\n", c->retry_count, c->logical_pos,
-               delay * 1e-6, av_err2str(status),
-               curl_easy_strerror(code));
+               "after: %s\n", c->retry_count, c->logical_pos, delay * 1e-6, err);
     }
 
     const int64_t sleep_us = c->retry_time - av_gettime_relative();
