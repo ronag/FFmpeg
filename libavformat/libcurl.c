@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "libavutil/bprint.h"
 #include "libavutil/dict.h"
@@ -145,6 +146,7 @@ struct CurlContext {
     char           *icy_metadata_packet;  /* last in-band block (output) */
     AVDictionary   *metadata;             /* ICY metadata (output) */
     char           *reconnect_on_http_error;
+    int             reconnect_streamed;
     int             respect_retry_after;
 
     /* URL thread bookkeeping, not touched by loop thread */
@@ -271,6 +273,9 @@ static int http_error_is_recoverable(CurlContext *c, int http_status)
 
 static int is_recoverable(CurlContext *c, CURLcode code, int http_status)
 {
+    if (!c->seekable && !c->reconnect_streamed)
+        return 0;
+
     switch (code) {
     case CURLE_OK:
         return http_error_is_recoverable(c, http_status);
@@ -1476,7 +1481,9 @@ static int retry_request_locked(URLContext *h, int nonblock)
          * the reset of c->state is observable, before the next libcurl_read()
          * call, otherwise this might hit the exact same retry path a second
          * time. */
-        int ret = curl_dispatch(c->loop, CMD_SEEK, c, c->logical_pos, 1);
+        av_assert0(c->seekable || c->reconnect_streamed);
+        const int64_t pos = c->seekable ? c->logical_pos : 0;
+        int ret = curl_dispatch(c->loop, CMD_SEEK, c, pos, 1);
         if (ret < 0)
             return ret;
         c->retry_time = 0;
@@ -1645,7 +1652,7 @@ static int libcurl_read(URLContext *h, unsigned char *buf, int size)
         }
 
         if (c->status) {
-            if (c->seekable && is_recoverable(c, c->curl_status, c->http_status))
+            if (is_recoverable(c, c->curl_status, c->http_status))
                 return retry_request_locked(h, nonblock);
             if (c->status == AVERROR_EOF && c->icy_block_len >= 0)
                 av_log(h, AV_LOG_WARNING,
@@ -1800,6 +1807,7 @@ static const AVOption options[] = {
         { "3only",             "HTTP/3 only",                           0, AV_OPT_TYPE_CONST, { .i64 = CURL_HTTP_VERSION_3ONLY },               0, 0, D, .unit = "http_version" },
     { "short_seek_size", "threshold to favor readahead over seek", OFFSET(short_seek_size), AV_OPT_TYPE_INT64, { .i64 = 0 }, 0, INT64_MAX, D },
     { "reconnect_on_http_error", "list of http status codes to reconnect on", OFFSET(reconnect_on_http_error), AV_OPT_TYPE_STRING, { .str = "429,503" }, 0, 0, D },
+    { "reconnect_streamed", "auto reconnect streamed / non seekable streams", OFFSET(reconnect_streamed), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, D },
     { "respect_retry_after", "respect the Retry-After header when retrying connections", OFFSET(respect_retry_after), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, D },
     { NULL }
 };
