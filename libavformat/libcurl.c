@@ -814,7 +814,9 @@ static void on_done(CurlContext *c, CURLcode code)
         int64_t file_end = c->content_size >= 0 ? c->content_size - 1 : INT64_MAX;
         if (c->end_off > 0)
             file_end = FFMIN(file_end, c->end_off - 1);
-        if (c->seekable && c->request_end >= 0 && c->request_end < file_end) {
+        if (c->seekable && c->request_end >= 0 &&
+            (file_end < 0 || c->request_end < file_end))
+        {
             if (!received) {
                 av_log(c->h, AV_LOG_ERROR, "Server sent back no data at offset "
                        "%"PRId64"\n", c->request_start);
