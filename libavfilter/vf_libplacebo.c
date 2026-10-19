@@ -680,12 +680,10 @@ static int copy_pl_queue(const AVVulkanDeviceContext *hwctx,
     return 0;
 }
 
-static int init_vulkan(AVFilterContext *avctx, const AVVulkanDeviceContext *hwctx)
+static int init_device(AVFilterContext *avctx, const AVVulkanDeviceContext *hwctx)
 {
     int err = 0;
     LibplaceboContext *s = avctx->priv;
-    uint8_t *buf = NULL;
-    size_t buf_len;
 
     if (hwctx) {
         struct pl_vulkan_import_params import_params = {
@@ -733,6 +731,20 @@ static int init_vulkan(AVFilterContext *avctx, const AVVulkanDeviceContext *hwct
 
     s->gpu = s->vulkan->gpu;
     pl_gpu_set_cache(s->gpu, s->cache);
+    return 0;
+
+fail:
+    return err;
+}
+
+static int init_vulkan(AVFilterContext *avctx, const AVVulkanDeviceContext *hwctx)
+{
+    int err = 0;
+    LibplaceboContext *s = avctx->priv;
+    uint8_t *buf = NULL;
+    size_t buf_len;
+
+    RET(init_device(avctx, hwctx));
 
     /* Parse the user shaders, if requested */
     if (s->shader_bin_len)
