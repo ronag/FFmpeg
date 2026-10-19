@@ -1432,19 +1432,13 @@ fail:
     return err;
 }
 
-static int libplacebo_config_input(AVFilterLink *inlink)
+static int config_input_common(AVFilterLink *inlink,
+                               int (*init)(AVFilterContext *avctx,
+                                           const AVVulkanDeviceContext *hwctx))
 {
     AVFilterContext *avctx = inlink->dst;
     LibplaceboContext *s   = avctx->priv;
     FilterLink        *l   = ff_filter_link(inlink);
-
-    if (s->rotation % PL_ROTATION_180 == PL_ROTATION_90) {
-        /* Swap width and height for 90 degree rotations to make the size and
-         * scaling calculations work out correctly */
-        FFSWAP(int, inlink->w, inlink->h);
-        if (inlink->sample_aspect_ratio.num)
-            inlink->sample_aspect_ratio = av_inv_q(inlink->sample_aspect_ratio);
-    }
 
     /* Deferred Vulkan setup (inherit_device): the device was not created at
      * init; adopt the one the input frames live on. query_formats advertised
@@ -1463,7 +1457,7 @@ static int libplacebo_config_input(AVFilterLink *inlink)
         avctx->hw_device_ctx = av_buffer_ref(hwfc->device_ref);
         if (!avctx->hw_device_ctx)
             return AVERROR(ENOMEM);
-        if ((err = init_vulkan(avctx, hwfc->device_ctx->hwctx)) < 0)
+        if ((err = init(avctx, hwfc->device_ctx->hwctx)) < 0)
             return err;
     }
 
@@ -1474,6 +1468,21 @@ static int libplacebo_config_input(AVFilterLink *inlink)
     s->vkctx.input_format = inlink->format;
 
     return 0;
+}
+
+static int libplacebo_config_input(AVFilterLink *inlink)
+{
+    LibplaceboContext *s = inlink->dst->priv;
+
+    if (s->rotation % PL_ROTATION_180 == PL_ROTATION_90) {
+        /* Swap width and height for 90 degree rotations to make the size and
+         * scaling calculations work out correctly */
+        FFSWAP(int, inlink->w, inlink->h);
+        if (inlink->sample_aspect_ratio.num)
+            inlink->sample_aspect_ratio = av_inv_q(inlink->sample_aspect_ratio);
+    }
+
+    return config_input_common(inlink, init_vulkan);
 }
 
 static inline AVRational max_q(AVRational a, AVRational b)
