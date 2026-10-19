@@ -570,6 +570,21 @@ static int append_inputs(AVFilterContext *avctx, int nb_inputs,
     return 0;
 }
 
+/* Use the filter's own Vulkan device if it has one, or create a new one */
+static int init_default_device(AVFilterContext *avctx,
+                               int (*init)(AVFilterContext *avctx,
+                                           const AVVulkanDeviceContext *hwctx))
+{
+    const AVVulkanDeviceContext *vkhwctx = NULL;
+    if (avctx->hw_device_ctx) {
+        const AVHWDeviceContext *avhwctx = (void *) avctx->hw_device_ctx->data;
+        if (avhwctx->type == AV_HWDEVICE_TYPE_VULKAN)
+            vkhwctx = avhwctx->hwctx;
+    }
+
+    return init(avctx, vkhwctx);
+}
+
 static int libplacebo_init(AVFilterContext *avctx)
 {
     int err = 0;
@@ -616,15 +631,8 @@ static int libplacebo_init(AVFilterContext *avctx)
     /* if we are told to inherit the input link's device, ignore the global
      * hw_device_ctx even if it would be compatible. This ensure consistent
      * behaviour when the flag is set. */
-    if (!s->inherit_device) {
-        const AVVulkanDeviceContext *vkhwctx = NULL;
-        if (avctx->hw_device_ctx) {
-            const AVHWDeviceContext *avhwctx = (void *) avctx->hw_device_ctx->data;
-            if (avhwctx->type == AV_HWDEVICE_TYPE_VULKAN)
-                vkhwctx = avhwctx->hwctx;
-        }
-        RET(init_vulkan(avctx, vkhwctx));
-    }
+    if (!s->inherit_device)
+        RET(init_default_device(avctx, init_vulkan));
 
     return 0;
 
