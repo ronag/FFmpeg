@@ -18,6 +18,8 @@
 
 #include <math.h>
 
+#include "config_components.h"
+
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "libavutil/eval.h"
@@ -38,6 +40,12 @@
 #include <libplacebo/utils/libav.h>
 #include <libplacebo/utils/frame_queue.h>
 #include <libplacebo/vulkan.h>
+
+#if PL_API_VER >= 386
+#include <libplacebo/compositor.h>
+#else
+typedef const struct pl_scene_t *pl_scene;
+#endif
 
 enum {
     TONE_MAP_AUTO,
@@ -160,6 +168,12 @@ typedef struct LibplaceboContext {
     LibplaceboInput *inputs;
     int nb_inputs;
     int nb_active;
+
+    /* scene graph (libplacebo_scene only) */
+    char *scene_json;
+    pl_scene scene;
+    AVRational out_sar;
+    int warned_csp_change;
 
     /* settings */
     char *out_format_string;
@@ -510,15 +524,10 @@ static void libplacebo_uninit(AVFilterContext *avctx);
 static int libplacebo_config_input(AVFilterLink *inlink);
 static int init_vulkan(AVFilterContext *avctx, const AVVulkanDeviceContext *hwctx);
 
-static int libplacebo_init(AVFilterContext *avctx)
+/* Creates the log, shader cache and output format shared by all filters */
+static int init_common(AVFilterContext *avctx)
 {
-    int err = 0;
     LibplaceboContext *s = avctx->priv;
-
-    if (s->normalize_sar && s->fit_mode != FIT_FILL) {
-        av_log(avctx, AV_LOG_WARNING, "normalize_sar has no effect when using "
-               "a fit mode other than 'fill'\n");
-    }
 
     /* Create libplacebo log context */
     s->log = pl_log_create(PL_API_VER, pl_log_params(
@@ -530,12 +539,6 @@ static int libplacebo_init(AVFilterContext *avctx)
     if (!s->log)
         return AVERROR(ENOMEM);
 
-    s->opts = pl_options_alloc(s->log);
-    if (!s->opts) {
-        libplacebo_uninit(avctx);
-        return AVERROR(ENOMEM);
-    }
-
     if (s->shader_cache && s->shader_cache[0]) {
         s->cache = pl_cache_create(pl_cache_params(
             .log  = s->log,
@@ -543,10 +546,8 @@ static int libplacebo_init(AVFilterContext *avctx)
             .set  = pl_cache_set_file,
             .priv = s->shader_cache,
         ));
-        if (!s->cache) {
-            libplacebo_uninit(avctx);
+        if (!s->cache)
             return AVERROR(ENOMEM);
-        }
     }
 
     if (s->out_format_string) {
@@ -554,24 +555,72 @@ static int libplacebo_init(AVFilterContext *avctx)
         if (s->out_format == AV_PIX_FMT_NONE) {
             av_log(avctx, AV_LOG_ERROR, "Invalid output format: %s\n",
                    s->out_format_string);
-            libplacebo_uninit(avctx);
             return AVERROR(EINVAL);
         }
     } else {
         s->out_format = AV_PIX_FMT_NONE;
     }
 
-    for (int i = 0; i < s->nb_inputs; i++) {
+    return 0;
+}
+
+static int append_inputs(AVFilterContext *avctx, int nb_inputs,
+                         int (*config_props)(AVFilterLink *link))
+{
+    int err;
+
+    for (int i = 0; i < nb_inputs; i++) {
         AVFilterPad pad = {
             .name         = av_asprintf("input%d", i),
             .type         = AVMEDIA_TYPE_VIDEO,
-            .config_props = &libplacebo_config_input,
+            .config_props = config_props,
         };
         if (!pad.name)
             return AVERROR(ENOMEM);
-        RET(ff_append_inpad_free_name(avctx, &pad));
+        if ((err = ff_append_inpad_free_name(avctx, &pad)) < 0)
+            return err;
     }
 
+    return 0;
+}
+
+/* Use the filter's own Vulkan device if it has one, or create a new one */
+static int init_default_device(AVFilterContext *avctx,
+                               int (*init)(AVFilterContext *avctx,
+                                           const AVVulkanDeviceContext *hwctx))
+{
+    const AVVulkanDeviceContext *vkhwctx = NULL;
+    if (avctx->hw_device_ctx) {
+        const AVHWDeviceContext *avhwctx = (void *) avctx->hw_device_ctx->data;
+        if (avhwctx->type == AV_HWDEVICE_TYPE_VULKAN)
+            vkhwctx = avhwctx->hwctx;
+    }
+
+    return init(avctx, vkhwctx);
+}
+
+static int libplacebo_init(AVFilterContext *avctx)
+{
+    int err = 0;
+    LibplaceboContext *s = avctx->priv;
+
+    if (s->normalize_sar && s->fit_mode != FIT_FILL) {
+        av_log(avctx, AV_LOG_WARNING, "normalize_sar has no effect when using "
+               "a fit mode other than 'fill'\n");
+    }
+
+    if ((err = init_common(avctx)) < 0) {
+        libplacebo_uninit(avctx);
+        return err;
+    }
+
+    s->opts = pl_options_alloc(s->log);
+    if (!s->opts) {
+        libplacebo_uninit(avctx);
+        return AVERROR(ENOMEM);
+    }
+
+    RET(append_inputs(avctx, s->nb_inputs, &libplacebo_config_input));
     RET(update_settings(avctx));
     RET(av_expr_parse(&s->crop_x_pexpr, s->crop_x_expr, var_names,
                       NULL, NULL, NULL, NULL, 0, s));
@@ -596,15 +645,8 @@ static int libplacebo_init(AVFilterContext *avctx)
     /* if we are told to inherit the input link's device, ignore the global
      * hw_device_ctx even if it would be compatible. This ensure consistent
      * behaviour when the flag is set. */
-    if (!s->inherit_device) {
-        const AVVulkanDeviceContext *vkhwctx = NULL;
-        if (avctx->hw_device_ctx) {
-            const AVHWDeviceContext *avhwctx = (void *) avctx->hw_device_ctx->data;
-            if (avhwctx->type == AV_HWDEVICE_TYPE_VULKAN)
-                vkhwctx = avhwctx->hwctx;
-        }
-        RET(init_vulkan(avctx, vkhwctx));
-    }
+    if (!s->inherit_device)
+        RET(init_default_device(avctx, init_vulkan));
 
     return 0;
 
@@ -670,12 +712,10 @@ static int copy_pl_queue(const AVVulkanDeviceContext *hwctx,
     return 0;
 }
 
-static int init_vulkan(AVFilterContext *avctx, const AVVulkanDeviceContext *hwctx)
+static int init_device(AVFilterContext *avctx, const AVVulkanDeviceContext *hwctx)
 {
     int err = 0;
     LibplaceboContext *s = avctx->priv;
-    uint8_t *buf = NULL;
-    size_t buf_len;
 
     if (hwctx) {
         struct pl_vulkan_import_params import_params = {
@@ -723,6 +763,20 @@ static int init_vulkan(AVFilterContext *avctx, const AVVulkanDeviceContext *hwct
 
     s->gpu = s->vulkan->gpu;
     pl_gpu_set_cache(s->gpu, s->cache);
+    return 0;
+
+fail:
+    return err;
+}
+
+static int init_vulkan(AVFilterContext *avctx, const AVVulkanDeviceContext *hwctx)
+{
+    int err = 0;
+    LibplaceboContext *s = avctx->priv;
+    uint8_t *buf = NULL;
+    size_t buf_len;
+
+    RET(init_device(avctx, hwctx));
 
     /* Parse the user shaders, if requested */
     if (s->shader_bin_len)
@@ -913,14 +967,99 @@ static void update_crops(AVFilterContext *ctx, LibplaceboInput *in,
     }
 }
 
+static int map_output(LibplaceboContext *s, AVFrame *out, struct pl_frame *target)
+{
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(out->format);
+    bool ok;
+
+    if (desc->flags & AV_PIX_FMT_FLAG_HWACCEL) {
+        ok = pl_map_avframe_ex(s->gpu, target, pl_avframe_params(
+            .frame    = out,
+            .map_dovi = false,
+        ));
+    } else {
+        ok = pl_frame_recreate_from_avframe(s->gpu, target, s->tex, out);
+    }
+
+    return ok ? 0 : AVERROR_EXTERNAL;
+}
+
+static int unmap_output(LibplaceboContext *s, struct pl_frame *target, AVFrame *out)
+{
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(out->format);
+
+    if (desc->flags & AV_PIX_FMT_FLAG_HWACCEL) {
+        pl_unmap_avframe(s->gpu, target);
+    } else if (!pl_download_avframe(s->gpu, target, out)) {
+        return AVERROR_EXTERNAL;
+    }
+
+    return 0;
+}
+
+/* Set the properties of an output frame from the reference frame (if any) and
+ * the output link. `csp`, if set, overrides the inferred color tags. */
+static int set_output_props(LibplaceboContext *s, const AVFilterLink *outlink,
+                            AVFrame *out, const AVFrame *ref,
+                            const struct pl_color_space *csp, bool deinterlaced)
+{
+    int err, changed = 0;
+
+    if (ref) {
+        if ((err = av_frame_copy_props(out, ref)) < 0)
+            return err;
+        if (deinterlaced)
+            out->flags &= ~(AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST);
+
+        if (s->apply_dovi && av_frame_get_side_data(ref, AV_FRAME_DATA_DOVI_METADATA)) {
+            /* Output of dovi reshaping is always BT.2020+PQ, so infer the correct
+             * output colorspace defaults */
+            out->color_primaries = AVCOL_PRI_BT2020;
+            out->color_trc = AVCOL_TRC_SMPTE2084;
+            changed |= AV_SIDE_DATA_PROP_COLOR_DEPENDENT;
+        }
+    }
+
+    out->width = outlink->w;
+    out->height = outlink->h;
+    out->colorspace = outlink->colorspace;
+    out->color_range = outlink->color_range;
+    out->alpha_mode = outlink->alpha_mode;
+    if (outlink->chroma_location != AVCHROMA_LOC_UNSPECIFIED)
+        out->chroma_location = outlink->chroma_location;
+
+    if (csp) {
+        out->color_primaries = pl_primaries_to_av(csp->primaries);
+        out->color_trc = pl_transfer_to_av(csp->transfer);
+    }
+    if (s->color_trc >= 0)
+        out->color_trc = s->color_trc;
+    if (s->color_primaries >= 0)
+        out->color_primaries = s->color_primaries;
+
+    if (!ref)
+        return 0;
+
+    /* Strip side data if no longer relevant */
+    if (out->width != ref->width || out->height != ref->height)
+        changed |= AV_SIDE_DATA_PROP_SIZE_DEPENDENT;
+    if (ref->color_trc != out->color_trc || ref->color_primaries != out->color_primaries)
+        changed |= AV_SIDE_DATA_PROP_COLOR_DEPENDENT;
+    av_frame_side_data_remove_by_props(&out->side_data, &out->nb_side_data, changed);
+
+    if (s->apply_filmgrain)
+        av_frame_remove_side_data(out, AV_FRAME_DATA_FILM_GRAIN_PARAMS);
+
+    return 0;
+}
+
 /* Construct and emit an output frame for a given timestamp */
 static int output_frame(AVFilterContext *ctx, int64_t pts)
 {
-    int err = 0, ok, changed = 0;
+    int err = 0;
     LibplaceboContext *s = ctx->priv;
     pl_options opts = s->opts;
     AVFilterLink *outlink = ctx->outputs[0];
-    const AVPixFmtDescriptor *outdesc = av_pix_fmt_desc_get(outlink->format);
     const double target_pts = TS2T(pts, outlink->time_base);
     struct pl_frame target;
     const AVFrame *ref = NULL;
@@ -962,39 +1101,7 @@ static int output_frame(AVFilterContext *ctx, int64_t pts)
     if (!ref)
         goto props_done;
 
-    RET(av_frame_copy_props(out, ref));
-    out->width = outlink->w;
-    out->height = outlink->h;
-    out->colorspace = outlink->colorspace;
-    out->color_range = outlink->color_range;
-    out->alpha_mode = outlink->alpha_mode;
-    if (outlink->chroma_location != AVCHROMA_LOC_UNSPECIFIED)
-        out->chroma_location = outlink->chroma_location;
-    if (s->deinterlace)
-        out->flags &= ~(AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST);
-
-    if (s->apply_dovi && av_frame_get_side_data(ref, AV_FRAME_DATA_DOVI_METADATA)) {
-        /* Output of dovi reshaping is always BT.2020+PQ, so infer the correct
-         * output colorspace defaults */
-        out->color_primaries = AVCOL_PRI_BT2020;
-        out->color_trc = AVCOL_TRC_SMPTE2084;
-        changed |= AV_SIDE_DATA_PROP_COLOR_DEPENDENT;
-    }
-
-    if (s->color_trc >= 0)
-        out->color_trc = s->color_trc;
-    if (s->color_primaries >= 0)
-        out->color_primaries = s->color_primaries;
-
-    /* Strip side data if no longer relevant */
-    if (out->width != ref->width || out->height != ref->height)
-        changed |= AV_SIDE_DATA_PROP_SIZE_DEPENDENT;
-    if (ref->color_trc != out->color_trc || ref->color_primaries != out->color_primaries)
-        changed |= AV_SIDE_DATA_PROP_COLOR_DEPENDENT;
-    av_frame_side_data_remove_by_props(&out->side_data, &out->nb_side_data, changed);
-
-    if (s->apply_filmgrain)
-        av_frame_remove_side_data(out, AV_FRAME_DATA_FILM_GRAIN_PARAMS);
+    RET(set_output_props(s, outlink, out, ref, NULL, s->deinterlace));
 
     if (s->reset_sar) {
         out->sample_aspect_ratio = ref->sample_aspect_ratio;
@@ -1011,18 +1118,7 @@ props_done:
         out->duration = 1;
 
     /* Map, render and unmap output frame */
-    if (outdesc->flags & AV_PIX_FMT_FLAG_HWACCEL) {
-        ok = pl_map_avframe_ex(s->gpu, &target, pl_avframe_params(
-            .frame    = out,
-            .map_dovi = false,
-        ));
-    } else {
-        ok = pl_frame_recreate_from_avframe(s->gpu, &target, s->tex, out);
-    }
-    if (!ok) {
-        err = AVERROR_EXTERNAL;
-        goto fail;
-    }
+    RET(map_output(s, out, &target));
 
     struct pl_frame orig_target = target;
     bool use_linear_compositor = false;
@@ -1079,12 +1175,7 @@ props_done:
         pl_render_image(s->linear_rr, NULL, &target, &opts->params);
     }
 
-    if (outdesc->flags & AV_PIX_FMT_FLAG_HWACCEL) {
-        pl_unmap_avframe(s->gpu, &target);
-    } else if (!pl_download_avframe(s->gpu, &target, out)) {
-        err = AVERROR_EXTERNAL;
-        goto fail;
-    }
+    RET(unmap_output(s, &target, out));
     return ff_filter_frame(outlink, out);
 
 fail:
@@ -1126,6 +1217,30 @@ static void discard_frame(const struct pl_source_frame *src)
     av_frame_free(&avframe);
 }
 
+/* Push an input frame to the queue, returning its first field */
+static enum pl_field push_frame(LibplaceboContext *s, pl_queue queue,
+                                const AVFilterLink *inlink, AVFrame *in,
+                                bool deinterlace)
+{
+    struct pl_source_frame src = {
+        .pts         = TS2T(in->pts, inlink->time_base),
+        .duration    = TS2T(in->duration, inlink->time_base),
+        .first_field = deinterlace ? pl_field_from_avframe(in) : PL_FIELD_NONE,
+        .frame_data  = in,
+        .map         = map_frame,
+        .unmap       = unmap_frame,
+        .discard     = discard_frame,
+    };
+
+    /* Input without a chroma location is assumed to be sited like the output. */
+    if (in->chroma_location == AVCHROMA_LOC_UNSPECIFIED)
+        in->chroma_location = inlink->dst->outputs[0]->chroma_location;
+
+    in->opaque = s;
+    pl_queue_push(queue, &src);
+    return src.first_field;
+}
+
 static int handle_input(AVFilterContext *ctx, LibplaceboInput *input)
 {
     int ret, status;
@@ -1136,29 +1251,15 @@ static int handle_input(AVFilterContext *ctx, LibplaceboInput *input)
     int64_t pts;
 
     while ((ret = ff_inlink_consume_frame(inlink, &in)) > 0) {
-        struct pl_source_frame src = {
-            .pts         = TS2T(in->pts, inlink->time_base),
-            .duration    = TS2T(in->duration, inlink->time_base),
-            .first_field = s->deinterlace ? pl_field_from_avframe(in) : PL_FIELD_NONE,
-            .frame_data  = in,
-            .map         = map_frame,
-            .unmap       = unmap_frame,
-            .discard     = discard_frame,
-        };
-
-        /* Input without a chroma location is assumed to be sited like the output. */
-        if (in->chroma_location == AVCHROMA_LOC_UNSPECIFIED)
-            in->chroma_location = outlink->chroma_location;
-
-        in->opaque = s;
-        pl_queue_push(input->queue, &src);
+        const enum pl_field field = push_frame(s, input->queue, inlink, in,
+                                               s->deinterlace);
 
         if (!s->fps.num) {
             /* Internally queue an output frame for the same PTS */
             pts = av_rescale_q(in->pts, inlink->time_base, outlink->time_base);
             av_fifo_write(input->out_pts, &pts, 1);
 
-            if (s->send_fields && src.first_field != PL_FIELD_NONE) {
+            if (s->send_fields && field != PL_FIELD_NONE) {
                 /* Queue the second field for interlaced content */
                 pts += av_rescale_q(in->duration, inlink->time_base, outlink->time_base) / 2;
                 av_fifo_write(input->out_pts, &pts, 1);
@@ -1267,14 +1368,17 @@ static int libplacebo_activate(AVFilterContext *ctx)
                 drain_input_pts(&s->inputs[i], out_pts);
             return output_frame(ctx, out_pts);
         } else if (s->nb_active == 0) {
-            /* Forward most recent status */
+            /* Forward most recent status, but don't let a later EOF mask errors */
             int status = s->inputs[0].status;
             int64_t status_pts = s->inputs[0].status_pts;
             for (int i = 1; i < s->nb_inputs; i++) {
                 const LibplaceboInput *in = &s->inputs[i];
                 if (in->status_pts > status_pts) {
-                    status = s->inputs[i].status;
-                    status_pts = s->inputs[i].status_pts;
+                    status_pts = in->status_pts;
+                    if (in->status != AVERROR_EOF || status == AVERROR_EOF)
+                        status = in->status;
+                } else if (status == AVERROR_EOF) {
+                    status = in->status;
                 }
             }
             ff_outlink_set_status(outlink, status, status_pts);
@@ -1331,6 +1435,10 @@ static int libplacebo_query_format(const AVFilterContext *ctx,
         if (pixfmt != s->out_format && s->out_format != AV_PIX_FMT_NONE)
             continue;
 
+        /* Mask based on user specified colorspace */
+        if (s->colorspace >= 0 && !!(desc->flags & AV_PIX_FMT_FLAG_RGB) != (s->colorspace == AVCOL_SPC_RGB))
+            continue;
+
         if (!pl_test_pixfmt_caps(s->gpu, pixfmt, PL_FMT_CAP_RENDERABLE))
             continue;
 
@@ -1360,20 +1468,20 @@ done:
 
     RET(ff_formats_ref(outfmts, &cfg_out[0]->formats));
 
-    outfmts = s->colorspace > 0 ? ff_make_formats_list_singleton(s->colorspace)
-                                : ff_all_color_spaces();
+    outfmts = s->colorspace >= 0 ? ff_make_formats_list_singleton(s->colorspace)
+                                 : ff_all_color_spaces();
     RET(ff_formats_ref(outfmts, &cfg_out[0]->color_spaces));
 
-    outfmts = s->color_range > 0 ? ff_make_formats_list_singleton(s->color_range)
-                                 : ff_all_color_ranges();
+    outfmts = s->color_range >= 0 ? ff_make_formats_list_singleton(s->color_range)
+                                  : ff_all_color_ranges();
     RET(ff_formats_ref(outfmts, &cfg_out[0]->color_ranges));
 
-    outfmts = s->alpha_mode > 0 ? ff_make_formats_list_singleton(s->alpha_mode)
+    outfmts = s->alpha_mode >= 0 ? ff_make_formats_list_singleton(s->alpha_mode)
                                  : ff_all_alpha_modes();
     RET(ff_formats_ref(outfmts, &cfg_out[0]->alpha_modes));
 
-    outfmts = s->chroma_location > 0 ? ff_make_formats_list_singleton(s->chroma_location)
-                                     : ff_all_chroma_locations();
+    outfmts = s->chroma_location >= 0 ? ff_make_formats_list_singleton(s->chroma_location)
+                                      : ff_all_chroma_locations();
     RET(ff_formats_ref(outfmts, &cfg_out[0]->chroma_locations));
     return 0;
 
@@ -1385,19 +1493,13 @@ fail:
     return err;
 }
 
-static int libplacebo_config_input(AVFilterLink *inlink)
+static int config_input_common(AVFilterLink *inlink,
+                               int (*init)(AVFilterContext *avctx,
+                                           const AVVulkanDeviceContext *hwctx))
 {
     AVFilterContext *avctx = inlink->dst;
     LibplaceboContext *s   = avctx->priv;
     FilterLink        *l   = ff_filter_link(inlink);
-
-    if (s->rotation % PL_ROTATION_180 == PL_ROTATION_90) {
-        /* Swap width and height for 90 degree rotations to make the size and
-         * scaling calculations work out correctly */
-        FFSWAP(int, inlink->w, inlink->h);
-        if (inlink->sample_aspect_ratio.num)
-            inlink->sample_aspect_ratio = av_inv_q(inlink->sample_aspect_ratio);
-    }
 
     /* Deferred Vulkan setup (inherit_device): the device was not created at
      * init; adopt the one the input frames live on. query_formats advertised
@@ -1416,7 +1518,7 @@ static int libplacebo_config_input(AVFilterLink *inlink)
         avctx->hw_device_ctx = av_buffer_ref(hwfc->device_ref);
         if (!avctx->hw_device_ctx)
             return AVERROR(ENOMEM);
-        if ((err = init_vulkan(avctx, hwfc->device_ctx->hwctx)) < 0)
+        if ((err = init(avctx, hwfc->device_ctx->hwctx)) < 0)
             return err;
     }
 
@@ -1429,23 +1531,62 @@ static int libplacebo_config_input(AVFilterLink *inlink)
     return 0;
 }
 
+static int libplacebo_config_input(AVFilterLink *inlink)
+{
+    LibplaceboContext *s = inlink->dst->priv;
+
+    if (s->rotation % PL_ROTATION_180 == PL_ROTATION_90) {
+        /* Swap width and height for 90 degree rotations to make the size and
+         * scaling calculations work out correctly */
+        FFSWAP(int, inlink->w, inlink->h);
+        if (inlink->sample_aspect_ratio.num)
+            inlink->sample_aspect_ratio = av_inv_q(inlink->sample_aspect_ratio);
+    }
+
+    return config_input_common(inlink, init_vulkan);
+}
+
 static inline AVRational max_q(AVRational a, AVRational b)
 {
     return av_cmp_q(a, b) < 0 ? b : a;
 }
 
+static int config_output_vulkan(AVFilterLink *outlink)
+{
+    int err;
+    FilterLink *l = ff_filter_link(outlink);
+    LibplaceboContext *s = outlink->src->priv;
+    AVHWFramesContext *hwfc;
+    AVVulkanFramesContext *vkfc;
+
+    if (outlink->format != AV_PIX_FMT_VULKAN)
+        return 0;
+
+    s->vkctx.output_width = outlink->w;
+    s->vkctx.output_height = outlink->h;
+    /* Default to reusing the input format */
+    if (s->out_format == AV_PIX_FMT_NONE || s->out_format == AV_PIX_FMT_VULKAN) {
+        s->vkctx.output_format = s->vkctx.input_format;
+    } else {
+        s->vkctx.output_format = s->out_format;
+    }
+    if ((err = ff_vk_filter_config_output(outlink)) < 0)
+        return err;
+    hwfc = (AVHWFramesContext *)l->hw_frames_ctx->data;
+    vkfc = hwfc->hwctx;
+    vkfc->usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    return 0;
+}
+
 static int libplacebo_config_output(AVFilterLink *outlink)
 {
     int err;
-    FilterLink          *l = ff_filter_link(outlink);
     AVFilterContext *avctx = outlink->src;
     LibplaceboContext *s   = avctx->priv;
     AVFilterLink *inlink   = outlink->src->inputs[0];
     FilterLink       *ol   = ff_filter_link(outlink);
     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(inlink->format);
     const AVPixFmtDescriptor *out_desc = av_pix_fmt_desc_get(outlink->format);
-    AVHWFramesContext *hwfc;
-    AVVulkanFramesContext *vkfc;
 
     /* Frame dimensions */
     RET(ff_scale_eval_dimensions(s, s->w_expr, s->h_expr, inlink, outlink,
@@ -1545,23 +1686,7 @@ static int libplacebo_config_output(AVFilterLink *outlink)
     s->var_values[VAR_OHSUB]    = 1 << out_desc->log2_chroma_w;
     s->var_values[VAR_OVSUB]    = 1 << out_desc->log2_chroma_h;
 
-    if (outlink->format != AV_PIX_FMT_VULKAN)
-        return 0;
-
-    s->vkctx.output_width = outlink->w;
-    s->vkctx.output_height = outlink->h;
-    /* Default to reusing the input format */
-    if (s->out_format == AV_PIX_FMT_NONE || s->out_format == AV_PIX_FMT_VULKAN) {
-        s->vkctx.output_format = s->vkctx.input_format;
-    } else {
-        s->vkctx.output_format = s->out_format;
-    }
-    RET(ff_vk_filter_config_output(outlink));
-    hwfc = (AVHWFramesContext *)l->hw_frames_ctx->data;
-    vkfc = hwfc->hwctx;
-    vkfc->usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-
-    return 0;
+    return config_output_vulkan(outlink);
 
 fail:
     return err;
@@ -1820,3 +1945,318 @@ const FFFilter ff_vf_libplacebo = {
     FILTER_QUERY_FUNC2(libplacebo_query_format),
     .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE | FF_FILTER_FLAG_DYNAMIC_FRAME_PARAMS,
 };
+
+#if CONFIG_LIBPLACEBO_SCENE_FILTER
+
+static int scene_init_device(AVFilterContext *avctx, const AVVulkanDeviceContext *hwctx)
+{
+    LibplaceboContext *s = avctx->priv;
+    int err = init_device(avctx, hwctx);
+    if (err < 0)
+        return err;
+    if (!pl_compositor_init(s->scene->comp, s->gpu))
+        return AVERROR_EXTERNAL;
+    return 0;
+}
+
+static int scene_config_input(AVFilterLink *inlink)
+{
+    return config_input_common(inlink, scene_init_device);
+}
+
+static int scene_init(AVFilterContext *avctx)
+{
+    int err;
+    LibplaceboContext *s = avctx->priv;
+    pl_compositor comp;
+
+    if (!s->scene_json || !s->w_expr || !s->h_expr || !s->fps_string) {
+        av_log(avctx, AV_LOG_ERROR, "The 'scene', 'w', 'h' and 'fps' options "
+               "are required\n");
+        return AVERROR(EINVAL);
+    }
+
+    RET(av_parse_video_rate(&s->fps, s->fps_string));
+    RET(init_common(avctx));
+
+    s->scene = pl_scene_create_json(s->log, s->scene_json, strlen(s->scene_json));
+    if (!s->scene) {
+        av_log(avctx, AV_LOG_ERROR, "Failed parsing scene description\n");
+        return AVERROR(EINVAL);
+    }
+
+    comp = s->scene->comp;
+    s->nb_inputs = comp->num_inputs;
+    if (!s->nb_inputs) {
+        av_log(avctx, AV_LOG_ERROR, "Scene contains no inputs\n");
+        return AVERROR(EINVAL);
+    }
+
+    /* Output color properties set by the scene, or -1 (auto) */
+    s->colorspace      = comp->repr.sys ? pl_system_to_av(comp->repr.sys) : -1;
+    s->color_range     = comp->repr.levels ? pl_levels_to_av(comp->repr.levels) : -1;
+    s->alpha_mode      = comp->repr.alpha ? pl_alpha_to_av(comp->repr.alpha) : -1;
+    s->chroma_location = comp->chroma_location ? pl_chroma_to_av(comp->chroma_location) : -1;
+
+    RET(append_inputs(avctx, s->nb_inputs, &scene_config_input));
+
+    if (!s->inherit_device)
+        RET(init_default_device(avctx, scene_init_device));
+    /* else deferred to scene_config_input() */
+
+    return 0;
+
+fail:
+    return err;
+}
+
+static void scene_uninit(AVFilterContext *avctx)
+{
+    LibplaceboContext *s = avctx->priv;
+    pl_scene_destroy(&s->scene);
+    libplacebo_uninit(avctx);
+}
+
+static int scene_eval_dim(AVFilterContext *avctx, const char *expr, int *out)
+{
+    double res;
+    int err = av_expr_parse_and_eval(&res, expr, NULL, NULL, NULL, NULL,
+                                     NULL, NULL, NULL, 0, avctx);
+    if (err < 0 || res < 1 || res > INT_MAX) {
+        av_log(avctx, AV_LOG_ERROR, "Invalid output dimension: %s\n", expr);
+        return err < 0 ? err : AVERROR(EINVAL);
+    }
+
+    *out = lrint(res);
+    return 0;
+}
+
+/* Render what was negotiated, if it differs from the scene. Only compare the
+ * libav equivalents, which can't represent e.g. HLG ICtCp. Returns whether
+ * anything was changed. */
+static int scene_force_link_props(pl_compositor comp, const AVFilterLink *outlink)
+{
+    int changed = 0;
+    if (pl_system_to_av(comp->repr.sys) != outlink->colorspace) {
+        comp->repr.sys = pl_system_from_av(outlink->colorspace);
+        changed = 1;
+    }
+    if (pl_levels_to_av(comp->repr.levels) != outlink->color_range) {
+        comp->repr.levels = pl_levels_from_av(outlink->color_range);
+        changed = 1;
+    }
+    if (pl_alpha_to_av(comp->repr.alpha) != outlink->alpha_mode) {
+        comp->repr.alpha = pl_alpha_from_av(outlink->alpha_mode);
+        changed = 1;
+    }
+    if (pl_chroma_to_av(comp->chroma_location) != outlink->chroma_location) {
+        comp->chroma_location = pl_chroma_from_av(outlink->chroma_location);
+        changed = 1;
+    }
+    return changed;
+}
+
+static int scene_config_output(AVFilterLink *outlink)
+{
+    int err;
+    AVFilterContext *avctx = outlink->src;
+    LibplaceboContext *s   = avctx->priv;
+    FilterLink          *l = ff_filter_link(outlink);
+
+    scene_force_link_props(s->scene->comp, outlink);
+    RET(scene_eval_dim(avctx, s->w_expr, &outlink->w));
+    RET(scene_eval_dim(avctx, s->h_expr, &outlink->h));
+    outlink->sample_aspect_ratio = s->out_sar;
+    outlink->time_base = av_inv_q(s->fps);
+    l->frame_rate = s->fps;
+
+    return config_output_vulkan(outlink);
+
+fail:
+    return err;
+}
+
+static int scene_handle_input(AVFilterContext *ctx, int idx)
+{
+    int ret, status;
+    LibplaceboContext *s = ctx->priv;
+    AVFilterLink *inlink = ctx->inputs[idx];
+    pl_input input = s->scene->comp->inputs[idx];
+    const bool deinterlace = input->params && input->params->deinterlace_params;
+    AVFrame *in;
+    int64_t pts;
+
+    while ((ret = ff_inlink_consume_frame(inlink, &in)) > 0)
+        push_frame(s, input->queue, inlink, in, deinterlace);
+
+    if (ret < 0)
+        return ret;
+
+    if (ff_inlink_acknowledge_status(inlink, &status, &pts)) {
+        pl_queue_set_status(input->queue, status == AVERROR_EOF ? PL_QUEUE_EOF : PL_QUEUE_ERR);
+        input->user_data = (void *) (intptr_t) status;
+    }
+
+    return 0;
+}
+
+static int scene_output_frame(AVFilterContext *ctx, int64_t pts,
+                              const struct pl_queue_params *qparams,
+                              const struct pl_compositor_status *st)
+{
+    int err = 0;
+    bool ok;
+    LibplaceboContext *s = ctx->priv;
+    AVFilterLink *outlink = ctx->outputs[0];
+    const struct pl_render_params *par = st->num_visible ? st->visible[0]->params : NULL;
+    const struct pl_frame *ref_pl = st->base;
+    const AVFrame *ref = ref_pl ? pl_get_mapped_avframe(ref_pl) : NULL;
+    struct pl_frame target;
+    AVFrame *out;
+
+    out = ff_get_video_buffer(outlink, outlink->w, outlink->h);
+    if (!out)
+        return AVERROR(ENOMEM);
+
+    /* The reference color space includes any scene overrides */
+    RET(set_output_props(s, outlink, out, ref, ref_pl ? &ref_pl->color : NULL,
+                         par && par->deinterlace_params));
+    out->sample_aspect_ratio = outlink->sample_aspect_ratio;
+    out->pts = pts;
+    out->duration = 1;
+
+    RET(map_output(s, out, &target));
+    ok = pl_compositor_render(s->scene->comp, &target, qparams, NULL);
+    RET(unmap_output(s, &target, out));
+    if (!ok) {
+        err = AVERROR_EXTERNAL;
+        goto fail;
+    }
+    return ff_filter_frame(outlink, out);
+
+fail:
+    av_frame_free(&out);
+    return err;
+}
+
+static int scene_activate(AVFilterContext *ctx)
+{
+    int ret, retry = 0;
+    LibplaceboContext *s = ctx->priv;
+    AVFilterLink *outlink = ctx->outputs[0];
+    FilterLink *outl      = ff_filter_link(outlink);
+    pl_compositor comp    = s->scene->comp;
+
+    FF_FILTER_FORWARD_STATUS_BACK_ALL(outlink, ctx);
+    pl_log_level_update(s->log, get_log_level());
+
+    for (int i = 0; i < s->nb_inputs; i++) {
+        if ((ret = scene_handle_input(ctx, i)) < 0)
+            return ret;
+    }
+
+    if (!ff_outlink_frame_wanted(outlink))
+        return FFERROR_NOT_READY;
+
+    const int64_t out_pts = outl->frame_count_out;
+    const struct pl_queue_params qparams = *pl_queue_params(
+        .pts            = TS2T(out_pts, outlink->time_base),
+        .vsync_duration = av_q2d(outlink->time_base),
+    );
+
+    pl_scene_update(s->scene, qparams.pts);
+    if (scene_force_link_props(comp, outlink)) {
+        av_log_once(ctx, AV_LOG_WARNING, AV_LOG_DEBUG, &s->warned_csp_change,
+                    "Scene changes the output color representation mid-stream, "
+                    "which is not supported; keeping the negotiated values.\n");
+    }
+
+    /* These are not yet negotiated on the link, so just reflect back any changes */
+    s->color_primaries = comp->color.primaries ? pl_primaries_to_av(comp->color.primaries) : -1;
+    s->color_trc       = comp->color.transfer  ? pl_transfer_to_av(comp->color.transfer)   : -1;
+
+    struct pl_compositor_status st;
+    st = pl_compositor_update(comp, &qparams, pl_canvas_size(
+        .width              = outlink->w,
+        .height             = outlink->h,
+        .pixel_aspect_ratio = av_q2d(outlink->sample_aspect_ratio),
+    ));
+
+    for (int i = 0; i < s->nb_inputs; i++) {
+        AVFilterLink *inlink = ctx->inputs[i];
+        switch (st.input_status[i].status) {
+        case PL_QUEUE_MORE:
+            if (!ff_outlink_get_status(inlink)) {
+                ff_inlink_request_frame(inlink);
+                retry = 1;
+            }
+            break;
+        case PL_QUEUE_EOF:
+            /* Also closes inputs that reached their stop_pts early */
+            ff_inlink_set_status(inlink, AVERROR_EOF);
+            break;
+        case PL_QUEUE_ERR: {
+            /* Forward the error of the failed input */
+            const int status = (intptr_t) comp->inputs[i]->user_data;
+            if (!status)
+                return AVERROR_EXTERNAL;
+            ff_outlink_set_status(outlink, status, out_pts);
+            return 0;
+        }
+        default:
+            break;
+        }
+    }
+
+    if (retry)
+        return 0;
+
+    if (st.status == PL_QUEUE_EOF) {
+        ff_outlink_set_status(outlink, AVERROR_EOF, out_pts);
+        return 0;
+    }
+
+    return scene_output_frame(ctx, out_pts, &qparams, &st);
+}
+
+static const AVOption libplacebo_scene_options[] = {
+    { "scene", "JSON scene graph description", OFFSET(scene_json), AV_OPT_TYPE_STRING, .flags = STATIC },
+    { "w", "Output video frame width", OFFSET(w_expr), AV_OPT_TYPE_STRING, .flags = STATIC },
+    { "h", "Output video frame height", OFFSET(h_expr), AV_OPT_TYPE_STRING, .flags = STATIC },
+    { "fps", "Output video frame rate", OFFSET(fps_string), AV_OPT_TYPE_STRING, .flags = STATIC },
+    { "sar", "Output sample aspect ratio", OFFSET(out_sar), AV_OPT_TYPE_RATIONAL, {.dbl = 1.0}, 0, INT_MAX, STATIC },
+    { "format", "Output video format", OFFSET(out_format_string), AV_OPT_TYPE_STRING, .flags = STATIC },
+    { "inherit_device", "Inherit the Vulkan device from the input's hardware frames context",
+        OFFSET(inherit_device), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, .flags = STATIC },
+    { "shader_cache",  "Set shader cache path", OFFSET(shader_cache), AV_OPT_TYPE_STRING, {.str = NULL}, .flags = STATIC },
+    { "apply_filmgrain", "Apply film grain metadata", OFFSET(apply_filmgrain), AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, DYNAMIC },
+    { "apply_dolbyvision", "Apply Dolby Vision metadata", OFFSET(apply_dovi), AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, DYNAMIC },
+    { NULL },
+};
+
+AVFILTER_DEFINE_CLASS(libplacebo_scene);
+
+static const AVFilterPad libplacebo_scene_outputs[] = {
+    {
+        .name         = "default",
+        .type         = AVMEDIA_TYPE_VIDEO,
+        .config_props = &scene_config_output,
+    },
+};
+
+const FFFilter ff_vf_libplacebo_scene = {
+    .p.name         = "libplacebo_scene",
+    .p.description  = NULL_IF_CONFIG_SMALL("Composite inputs according to a libplacebo scene graph"),
+    .p.priv_class   = &libplacebo_scene_class,
+    .p.flags        = AVFILTER_FLAG_HWDEVICE | AVFILTER_FLAG_DYNAMIC_INPUTS,
+    .priv_size      = sizeof(LibplaceboContext),
+    .init           = &scene_init,
+    .uninit         = &scene_uninit,
+    .activate       = &scene_activate,
+    .process_command = &ff_filter_process_command,
+    FILTER_OUTPUTS(libplacebo_scene_outputs),
+    FILTER_QUERY_FUNC2(libplacebo_query_format),
+    .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE | FF_FILTER_FLAG_DYNAMIC_FRAME_PARAMS,
+};
+
+#endif /* CONFIG_LIBPLACEBO_SCENE_FILTER */
