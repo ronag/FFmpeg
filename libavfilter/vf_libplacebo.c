@@ -1334,6 +1334,10 @@ static int libplacebo_query_format(const AVFilterContext *ctx,
         if (pixfmt != s->out_format && s->out_format != AV_PIX_FMT_NONE)
             continue;
 
+        /* Mask based on user specified colorspace */
+        if (s->colorspace >= 0 && !!(desc->flags & AV_PIX_FMT_FLAG_RGB) != (s->colorspace == AVCOL_SPC_RGB))
+            continue;
+
         if (!pl_test_pixfmt_caps(s->gpu, pixfmt, PL_FMT_CAP_RENDERABLE))
             continue;
 
