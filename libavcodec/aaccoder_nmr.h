@@ -638,6 +638,36 @@ static int nmr_eval_slots(AACEncContext *s, NMRSlot *const *sl, int nsl, int ste
     return total;
 }
 
+/* Dense short frames at high rates can exceed the decoder buffer even at the
+ * coarsest candidate grid; an illegal frame traps the outer re-encode loop
+ * forever. Shed the highest bands until the pooled bits fit cap. act[] runs
+ * window group by window group, so pick the highest band across all groups;
+ * the first band anchors the scalefactor chain and stays. Returns the bits. */
+static int nmr_shed_to_cap(AACEncContext *s, NMRSlot *const *sl, int nsl,
+                           float lam, int tot, int cap)
+{
+    while (tot > cap) {
+        int dropped = 0;
+        for (int k = 0; k < nsl; k++) {
+            NMRSlot *t = sl[k];
+            int hi = 1;
+            if (t->nact <= 1)
+                continue;
+            for (int b_ = 2; b_ < t->nact; b_++)
+                if (t->bg[t->act[b_]] >= t->bg[t->act[hi]])
+                    hi = b_;
+            nmr_drop_band(t, t->act[hi]);
+            memmove(&t->act[hi], &t->act[hi + 1], (t->nact - hi - 1) * sizeof(t->act[0]));
+            t->nact--;
+            dropped = 1;
+        }
+        if (!dropped)
+            break;
+        tot = nmr_eval_slots(s, sl, nsl, NMR_STEP, lam);
+    }
+    return tot;
+}
+
 /* Bisect ONE shared lambda across the slots so the POOLED bits meet destbits.
  * This is the CPE budget pool: bits flow to whichever channel of the pair has
  * demand at the common operating point, instead of an equal per-channel split. */
@@ -1152,35 +1182,7 @@ static void nmr_solve_group(AVCodecContext *avctx, AACEncContext *s,
             tot = 0;
             for (int k = 0; k < nsl; k++)
                 tot += nmr_slot_bits(sl[k], s->nmr->nb[sl[k]->si], NMR_STEP);
-            /* dense short frames at high rates can exceed the decoder
-             * buffer even at the coarsest candidate grid; an illegal frame
-             * traps the outer re-encode loop forever. Shed the highest
-             * bands until the frame fits. act[] runs window group by window
-             * group, so pick the highest band across all groups; the first
-             * band anchors the scalefactor chain and stays. */
-            while (tot > hardcap) {
-                int dropped = 0;
-                for (int k = 0; k < nsl; k++) {
-                    NMRSlot *t = sl[k];
-                    SingleChannelElement *sce = t->sce;
-                    int hi = 1, b, w0, g;
-                    if (t->nact <= 1)
-                        continue;
-                    for (int b_ = 2; b_ < t->nact; b_++)
-                        if (t->bg[t->act[b_]] >= t->bg[t->act[hi]])
-                            hi = b_;
-                    b  = t->act[hi];
-                    w0 = t->bw[b]; g = t->bg[b];
-                    for (int w2 = 0; w2 < sce->ics.group_len[w0]; w2++)
-                        sce->zeroes[(w0+w2)*16+g] = 1;
-                    memmove(&t->act[hi], &t->act[hi + 1], (t->nact - hi - 1) * sizeof(t->act[0]));
-                    t->nact--;
-                    dropped = 1;
-                }
-                if (!dropped)
-                    break;
-                tot = nmr_eval_slots(s, sl, nsl, NMR_STEP, lam);
-            }
+            nmr_shed_to_cap(s, sl, nsl, lam, tot, hardcap);
         }
     }
 
@@ -1226,6 +1228,18 @@ static void nmr_solve_group(AVCodecContext *avctx, AACEncContext *s,
                     lam = nmr_solve_slots(s, sl, nsl, NMR_STEP, rc_cap, lam, 1e4f, NMR_RC_ITERS);
                 }
             }
+        }
+        /* decoder-buffer legality is absolute, as on the VBR path: the cap
+         * solves above can rail at the coarsest lambda and still not fit */
+        tot = 0;
+        for (int k = 0; k < nsl; k++)
+            tot += nmr_slot_bits(sl[k], s->nmr->nb[sl[k]->si], NMR_STEP);
+        if (tot > hardcap) {
+            lam = nmr_solve_slots(s, sl, nsl, NMR_STEP, hardcap, lam, 1e4f, NMR_RC_ITERS);
+            tot = 0;
+            for (int k = 0; k < nsl; k++)
+                tot += nmr_slot_bits(sl[k], s->nmr->nb[sl[k]->si], NMR_STEP);
+            nmr_shed_to_cap(s, sl, nsl, lam, tot, hardcap);
         }
         s->nmr->lam_slew = lam;
     } else if (rc_eligible && !vbr) {
