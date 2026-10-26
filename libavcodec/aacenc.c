@@ -1618,6 +1618,7 @@ static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
             if (rate_bits < frame_bits) {
                 float ratio = ((float)rate_bits) / frame_bits;
                 s->lambda *= FFMIN(0.9f, ratio);
+                its++;
                 continue;
             }
             /* reset lambda when solution is found */
