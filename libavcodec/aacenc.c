@@ -1588,6 +1588,14 @@ static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
 
         frame_bits = put_bits_count(&s->pb);
 
+        /* A coder that cannot get under the decoder buffer would otherwise
+         * re-encode this frame forever: emit it oversized instead. */
+        if (its >= 16 && frame_bits >= 6144 * s->channels - 3) {
+            av_log(avctx, AV_LOG_WARNING, "Frame of %d bits exceeds the decoder buffer\n",
+                   frame_bits);
+            break;
+        }
+
         /* The NMR coder rate-controls itself (global-lambda reservoir servo):
          * per-frame bits intentionally float around the nominal rate, so skip
          * the lambda rate loop and only intervene on a hard overflow. */
