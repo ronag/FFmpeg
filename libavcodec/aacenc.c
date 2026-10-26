@@ -1621,9 +1621,12 @@ static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
         too_few_bits = too_few_bits - too_few_bits/8;
         too_many_bits = too_many_bits + too_many_bits/2;
 
+        /* Retry a frame over the decoder buffer only a bounded number of
+         * times, like the constant Q-scale path above: a coder whose output
+         * stops shrinking with lambda must not hang the encoder. */
         if (   its == 0 /* for steady-state Q-scale tracking */
             || (its < 5 && (frame_bits < too_few_bits || frame_bits > too_many_bits))
-            || frame_bits >= 6144 * s->channels - 3  )
+            || (its < 16 && frame_bits >= 6144 * s->channels - 3))
         {
             float ratio = ((float)rate_bits) / frame_bits;
 
