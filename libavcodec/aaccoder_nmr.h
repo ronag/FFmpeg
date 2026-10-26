@@ -689,6 +689,25 @@ static float nmr_solve_slots(AACEncContext *s, NMRSlot *const *sl, int nsl, int 
     return lam;
 }
 
+/* Decoder-buffer legality is absolute, as on the VBR path: a frame over the
+ * hard cap is re-solved toward it up to the coarsest lambda, and shed if
+ * that still does not fit. Returns the operating lambda. */
+static float nmr_fit_hardcap(AACEncContext *s, NMRSlot *const *sl, int nsl,
+                             float lam, int hardcap)
+{
+    int tot = 0;
+    for (int k = 0; k < nsl; k++)
+        tot += nmr_slot_bits(sl[k], s->nmr->nb[sl[k]->si], NMR_STEP);
+    if (tot > hardcap) {
+        lam = nmr_solve_slots(s, sl, nsl, NMR_STEP, hardcap, lam, 1e4f, NMR_RC_ITERS);
+        tot = 0;
+        for (int k = 0; k < nsl; k++)
+            tot += nmr_slot_bits(sl[k], s->nmr->nb[sl[k]->si], NMR_STEP);
+        nmr_shed_to_cap(s, sl, nsl, lam, tot, hardcap);
+    }
+    return lam;
+}
+
 /* Mean log2 achieved dist/real-mask over the active bands of all slots at
  * their current chosen[] - average dB-distance from the mask (Brandenburg
  * mean-NMR). Log compression keeps unavoidably-loud bands from swamping the
@@ -1229,23 +1248,15 @@ static void nmr_solve_group(AVCodecContext *avctx, AACEncContext *s,
                 }
             }
         }
-        /* decoder-buffer legality is absolute, as on the VBR path: the cap
-         * solves above can rail at the coarsest lambda and still not fit */
-        tot = 0;
-        for (int k = 0; k < nsl; k++)
-            tot += nmr_slot_bits(sl[k], s->nmr->nb[sl[k]->si], NMR_STEP);
-        if (tot > hardcap) {
-            lam = nmr_solve_slots(s, sl, nsl, NMR_STEP, hardcap, lam, 1e4f, NMR_RC_ITERS);
-            tot = 0;
-            for (int k = 0; k < nsl; k++)
-                tot += nmr_slot_bits(sl[k], s->nmr->nb[sl[k]->si], NMR_STEP);
-            nmr_shed_to_cap(s, sl, nsl, lam, tot, hardcap);
-        }
+        /* the cap solves above can rail at the coarsest lambda and still
+         * not fit */
+        lam = nmr_fit_hardcap(s, sl, nsl, lam, hardcap);
         s->nmr->lam_slew = lam;
     } else if (rc_eligible && !vbr) {
         /* corridor not yet bootstrapped: the same bucket-full floor, so a
          * fade-in bootstraps lam_rc at a spending operating point instead
          * of memorizing the intro's starvation lambda */
+        int hardcap = av_clip((int)(5800.f * FFMIN(1.f, lambda / 120.f)), 256, 5800) * chans;
         int headroom = rc_bmax - av_clip(s->nmr->rc_fill, -rc_bmax, rc_bmax);
         int fbits = (rc_rate_frame - headroom) * chans / s->channels;
         int tot = 0;
@@ -1253,6 +1264,8 @@ static void nmr_solve_group(AVCodecContext *avctx, AACEncContext *s,
             tot += nmr_slot_bits(sl[k], s->nmr->nb[sl[k]->si], NMR_STEP);
         if (tot < fbits)
             lam = nmr_solve_slots(s, sl, nsl, NMR_STEP, fbits, lam / 64.0f, lam, NMR_RC_ITERS);
+        /* the hard cap applies before the servo bootstraps, too */
+        lam = nmr_fit_hardcap(s, sl, nsl, lam, hardcap);
     }
 
     if (!vbr || vbr_subst)
