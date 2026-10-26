@@ -279,6 +279,13 @@ fate-aac-nmr-abr-encode: REF = $(SAMPLES)/audio-reference/luckynight_2ch_44kHz_s
 fate-aac-nmr-abr-encode: CMP_TARGET = 451
 fate-aac-nmr-abr-encode: FUZZ = 15
 
+# A near-silent impulse in the short window before an onset sits ~90 dB under
+# the onset bands: the NMR trellis found no chain-legal scalefactor path and
+# re-encoded the frame forever
+FATE_AAC_NMR_CHAIN-$(call ALLYES, LAVFI_INDEV AEVALSRC_FILTER ARESAMPLE_FILTER AAC_ENCODER NULL_MUXER) += fate-aac-nmr-chain-encode
+fate-aac-nmr-chain-encode: CMD = ffmpeg -auto_conversion_filters -f lavfi -i "aevalsrc=if(eq(n\,24000)\,1e-10\,0)+if(gte(n\,24256)\,0.01*sin(n*n*0.37+n)\,0):s=48000:d=1.5" -c:a aac -b:a 128k -fflags +bitexact -flags +bitexact -f null -
+fate-aac-nmr-chain-encode: CMP = null
+
 tests/data/fate/aac-5_1_2.adts: TAG = GEN
 tests/data/fate/aac-5_1_2.adts: tests/data/asynth-44100-8.wav
 tests/data/fate/aac-5_1_2.adts: ffmpeg$(PROGSSUF)$(EXESUF) | tests/data/fate
@@ -391,6 +398,7 @@ FATE_AAC_BSF-$(call FRAMECRC, AAC MATROSKA, AAC, AAC_PARSER AAC_ADTSTOASC_BSF MA
 
 FATE_SAMPLES_FFMPEG += $(FATE_AAC_ALL) $(FATE_AAC_FRAMECRC-yes) $(FATE_AAC_ENCODE-yes) $(FATE_AAC_BSF-yes)
 FATE_SAMPLES_FFMPEG_FFPROBE += $(FATE_AAC_ENCODE_FFPROBE-yes)
+FATE_FFMPEG += $(FATE_AAC_NMR_CHAIN-yes)
 
-fate-aac: $(FATE_AAC_ALL) $(FATE_AAC_FRAMECRC-yes) $(FATE_AAC_ENCODE-yes) $(FATE_AAC_ENCODE_FFPROBE-yes) $(FATE_AAC_BSF-yes)
+fate-aac: $(FATE_AAC_ALL) $(FATE_AAC_FRAMECRC-yes) $(FATE_AAC_ENCODE-yes) $(FATE_AAC_ENCODE_FFPROBE-yes) $(FATE_AAC_BSF-yes) $(FATE_AAC_NMR_CHAIN-yes)
 fate-aac-latm: $(FATE_AAC_LATM-yes)
