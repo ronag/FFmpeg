@@ -292,7 +292,8 @@ static void nmr_bail_channel(SingleChannelElement *sce)
 }
 
 /* Make the coded band sequence chain-legal on grid `step`: every band must
- * have a candidate within SCALE_MAX_DIFF of one its predecessor can reach.
+ * have a candidate within SCALE_MAX_DIFF of a candidate its predecessor can
+ * reach.
  * A band ~90 dB (2^(SCALE_MAX_DIFF/4)) under its neighbours breaks that, e.g.
  * rounding noise in a silent short window next to an onset, which the psy
  * mask ceiling still calls audible. The trellis then has no legal path: every
