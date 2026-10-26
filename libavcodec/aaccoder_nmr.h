@@ -291,6 +291,51 @@ static void nmr_bail_channel(SingleChannelElement *sce)
     }
 }
 
+/* Make the coded band sequence chain-legal on grid `step`: every band must
+ * have a candidate within SCALE_MAX_DIFF of one its predecessor can reach.
+ * A band ~90 dB (2^(SCALE_MAX_DIFF/4)) under its neighbours breaks that, e.g.
+ * rounding noise in a silent short window next to an onset, which the psy
+ * mask ceiling still calls audible. The trellis then has no legal path: every
+ * node reads FLT_MAX, the backtrack takes the finest candidate of every later
+ * band, no lambda brings the frame under the decoder buffer and the outer
+ * re-encode loop never ends. Shed the band with the smallest peak up to the
+ * break (the one pinning the chain) until a path exists. */
+static void nmr_chain_feasible(NMRSlot *t, int step)
+{
+    for (;;) {
+        int rlo = 0, rhi = 0, brk = -1, v = 0;
+        for (int k = 0; k < t->nact; k++) {
+            int b = t->act[k], lo = t->blo[b], hi = t->blo[b] + (t->bnc[b] - 1) * step;
+            if (k) {
+                /* clip to the grid points within reach of the previous band */
+                int a = rlo - SCALE_MAX_DIFF, c = rhi + SCALE_MAX_DIFF;
+                if (lo < a)
+                    lo = t->blo[b] + (a - t->blo[b] + step - 1) / step * step;
+                if (hi > c)
+                    hi = c < t->blo[b] ? -1 : t->blo[b] + (c - t->blo[b]) / step * step;
+                if (lo > hi) {
+                    brk = k;
+                    break;
+                }
+            }
+            rlo = lo;
+            rhi = hi;
+        }
+        if (brk < 0)
+            return;
+        for (int k = 1; k <= brk; k++)
+            if (t->maxvals[t->bidx[t->act[k]]] < t->maxvals[t->bidx[t->act[v]]])
+                v = k;
+        {
+            int b = t->act[v], w = t->bw[b], g = t->bg[b];
+            for (int w2 = 0; w2 < t->sce->ics.group_len[w]; w2++)
+                t->sce->zeroes[(w+w2)*16+g] = 1;
+        }
+        memmove(&t->act[v], &t->act[v + 1], (t->nact - v - 1) * sizeof(t->act[0]));
+        t->nact--;
+    }
+}
+
 /* Per-channel setup into slot t: short-block threshold shaping, the
  * allocation law, zero decisions, and the PASS 1 coarse candidate curves.
  * Returns the coded-band count; 0 = nothing codeable (caller bails). */
@@ -546,6 +591,7 @@ static int nmr_setup_channel(AVCodecContext *avctx, AACEncContext *s,
         t->is_pns[b] = 0;
     }
     t->nact = nbnd;
+    nmr_chain_feasible(t, cstep);
     return nbnd;
 }
 
