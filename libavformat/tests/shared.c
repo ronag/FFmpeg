@@ -27,6 +27,7 @@
 #endif
 
 #include "libavutil/dict.h"
+#include "libavutil/error.h"
 #include "libavutil/log.h"
 #include "libavutil/random_seed.h"
 #include "libavformat/avio.h"
