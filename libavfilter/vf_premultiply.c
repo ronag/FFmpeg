@@ -736,7 +736,7 @@ static int config_output(AVFilterLink *outlink)
             base->h                       != alpha->h) {
             av_log(ctx, AV_LOG_ERROR, "First input link %s parameters "
                    "(size %dx%d) do not match the corresponding "
-                   "second input link %s parameters (%dx%d) ",
+                   "second input link %s parameters (%dx%d)\n",
                    ctx->input_pads[0].name, base->w, base->h,
                    ctx->input_pads[1].name, alpha->w, alpha->h);
             return AVERROR(EINVAL);

@@ -29,6 +29,7 @@
 
 #include <stdio.h>
 #include "libavutil/avstring.h"
+#include "libavutil/bprint.h"
 #include "libavutil/channel_layout.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
@@ -360,13 +361,18 @@ static int config_props(AVFilterLink *link)
     }
     // add channel mapping summary if possible
     if (pan->pure_gains) {
-        av_log(ctx, AV_LOG_INFO, "Pure channel mapping detected:");
+        AVBPrint bp;
+
+        /* Log the line with a single av_log() call so that messages from
+         * other threads cannot end up in the middle of it. */
+        av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
         for (i = 0; i < pan->nb_output_channels; i++)
             if (pan->channel_map[i] < 0)
-                av_log(ctx, AV_LOG_INFO, " M");
+                av_bprintf(&bp, " M");
             else
-                av_log(ctx, AV_LOG_INFO, " %d", pan->channel_map[i]);
-        av_log(ctx, AV_LOG_INFO, "\n");
+                av_bprintf(&bp, " %d", pan->channel_map[i]);
+        av_log(ctx, AV_LOG_INFO, "Pure channel mapping detected:%s\n", bp.str);
+        av_bprint_finalize(&bp, NULL);
         return 0;
     }
     return 0;
