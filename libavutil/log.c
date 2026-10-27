@@ -379,6 +379,15 @@ int av_log_format_line2(void *ptr, int level, const char *fmt, va_list vl,
 void av_log_default_callback(void* ptr, int level, const char* fmt, va_list vl)
 {
     static int print_prefix = 1;
+    static void *open_line_ctx;
+    static uint64_t open_line_thread, next_thread_id;
+#if !HAVE_THREADS
+    static uint64_t thread_id;
+#elif defined(_MSC_VER)
+    static __declspec(thread) uint64_t thread_id;
+#else
+    static _Thread_local uint64_t thread_id;
+#endif
     static int count;
     static char prev[LINE_SZ];
     AVBPrint part[5];
@@ -396,8 +405,21 @@ void av_log_default_callback(void* ptr, int level, const char* fmt, va_list vl)
         return;
     ff_mutex_lock(&mutex);
 
+    /* Numeric IDs remain valid after a logging thread exits. */
+    if (!thread_id)
+        thread_id = ++next_thread_id;
+
+    /* Only the thread and context that left a line open may continue it.
+     * Otherwise end that line before printing the new message's prefix. */
+    if (!print_prefix && (ptr != open_line_ctx || thread_id != open_line_thread)) {
+        colored_fputs(av_clip(level >> 3, 0, NB_LEVELS - 1), 0, "\n");
+        print_prefix = 1;
+    }
+
     format_line(ptr, level, fmt, vl, part, &print_prefix, type);
     snprintf(line, sizeof(line), "%s%s%s%s", part[0].str, part[1].str, part[2].str, part[3].str);
+    open_line_ctx = print_prefix ? NULL : ptr;
+    open_line_thread = thread_id;
 
 #if HAVE_ISATTY
     if (!is_atty)

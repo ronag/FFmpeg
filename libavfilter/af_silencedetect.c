@@ -111,9 +111,11 @@ static av_always_inline void update(AVFilterContext *ctx, AVFrame *insamples,
                 set_meta(insamples, s->mono ? channel + 1 : 0, "silence_start",
                         av_ts2timestr(s->start[channel], &time_base));
                 if (s->mono)
-                    av_log(ctx, AV_LOG_INFO, "channel: %d | ", channel);
-                av_log(ctx, AV_LOG_INFO, "silence_start: %s\n",
-                        av_ts2timestr(s->start[channel], &time_base));
+                    av_log(ctx, AV_LOG_INFO, "channel: %d | silence_start: %s\n",
+                           channel, av_ts2timestr(s->start[channel], &time_base));
+                else
+                    av_log(ctx, AV_LOG_INFO, "silence_start: %s\n",
+                           av_ts2timestr(s->start[channel], &time_base));
             }
         }
     } else {
@@ -137,10 +139,13 @@ static av_always_inline void update(AVFilterContext *ctx, AVFrame *insamples,
                         av_ts2timestr(duration_ts, &time_base));
             }
             if (s->mono)
-                av_log(ctx, AV_LOG_INFO, "channel: %d | ", channel);
-            av_log(ctx, AV_LOG_INFO, "silence_end: %s | silence_duration: %s\n",
-                    av_ts2timestr(end_pts, &time_base),
-                    av_ts2timestr(duration_ts, &time_base));
+                av_log(ctx, AV_LOG_INFO, "channel: %d | silence_end: %s | silence_duration: %s\n",
+                       channel, av_ts2timestr(end_pts, &time_base),
+                       av_ts2timestr(duration_ts, &time_base));
+            else
+                av_log(ctx, AV_LOG_INFO, "silence_end: %s | silence_duration: %s\n",
+                       av_ts2timestr(end_pts, &time_base),
+                       av_ts2timestr(duration_ts, &time_base));
         }
         s->nb_null_samples[channel] = 0;
         s->start[channel] = INT64_MIN;
