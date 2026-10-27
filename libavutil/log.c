@@ -48,21 +48,6 @@
 
 static AVMutex mutex = AV_MUTEX_INITIALIZER;
 
-/* Identifies the calling thread, see the open line in av_log_default_callback(). */
-#if HAVE_PTHREADS
-typedef pthread_t LogThread;
-static LogThread log_thread_self(void) { return pthread_self(); }
-static int log_thread_equal(LogThread a, LogThread b) { return pthread_equal(a, b); }
-#elif HAVE_W32THREADS
-typedef DWORD LogThread;
-static LogThread log_thread_self(void) { return GetCurrentThreadId(); }
-static int log_thread_equal(LogThread a, LogThread b) { return a == b; }
-#else
-typedef int LogThread;
-static LogThread log_thread_self(void) { return 0; }
-static int log_thread_equal(LogThread a, LogThread b) { return 1; }
-#endif
-
 #define LINE_SZ 1024
 
 #if HAVE_VALGRIND_VALGRIND_H && CONFIG_VALGRIND_BACKTRACE
@@ -395,8 +380,14 @@ void av_log_default_callback(void* ptr, int level, const char* fmt, va_list vl)
 {
     static int print_prefix = 1;
     static void *open_line_ctx;
-    static LogThread open_line_thread;
-    LogThread self;
+    static uint64_t open_line_thread, next_thread_id;
+#if !HAVE_THREADS
+    static uint64_t thread_id;
+#elif defined(_MSC_VER)
+    static __declspec(thread) uint64_t thread_id;
+#else
+    static _Thread_local uint64_t thread_id;
+#endif
     static int count;
     static char prev[LINE_SZ];
     AVBPrint part[5];
@@ -414,24 +405,21 @@ void av_log_default_callback(void* ptr, int level, const char* fmt, va_list vl)
         return;
     ff_mutex_lock(&mutex);
 
-    /* A line left open (a message without a trailing newline) is continued
-     * only by the same context in the same thread. Any other message, e.g.
-     * one logged from another thread, even through the same context, ends
-     * that line first so that it starts on a line of its own, with its
-     * prefix. */
-    self = log_thread_self();
-    if (!print_prefix &&
-        (ptr != open_line_ctx || !log_thread_equal(self, open_line_thread))) {
+    /* Numeric IDs remain valid after a logging thread exits. */
+    if (!thread_id)
+        thread_id = ++next_thread_id;
+
+    /* Only the thread and context that left a line open may continue it.
+     * Otherwise end that line before printing the new message's prefix. */
+    if (!print_prefix && (ptr != open_line_ctx || thread_id != open_line_thread)) {
         colored_fputs(av_clip(level >> 3, 0, NB_LEVELS - 1), 0, "\n");
         print_prefix = 1;
     }
 
     format_line(ptr, level, fmt, vl, part, &print_prefix, type);
     snprintf(line, sizeof(line), "%s%s%s%s", part[0].str, part[1].str, part[2].str, part[3].str);
-    if (!print_prefix) {
-        open_line_ctx    = ptr;
-        open_line_thread = self;
-    }
+    open_line_ctx = print_prefix ? NULL : ptr;
+    open_line_thread = thread_id;
 
 #if HAVE_ISATTY
     if (!is_atty)

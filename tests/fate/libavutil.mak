@@ -161,6 +161,14 @@ fate-log: libavutil/tests/log$(EXESUF)
 fate-log: CMD = run libavutil/tests/log$(EXESUF)
 fate-log: CMP = null
 
+FATE_LIBAVUTIL += fate-log-context
+fate-log-context: libavutil/tests/log$(EXESUF)
+fate-log-context: CMD = run libavutil/tests/log$(EXESUF) context 2>&1
+
+FATE_LIBAVUTIL-$(HAVE_THREADS) += fate-log-threads
+fate-log-threads: libavutil/tests/log$(EXESUF)
+fate-log-threads: CMD = run libavutil/tests/log$(EXESUF) threads 2>&1
+
 FATE_LIBAVUTIL += fate-mastering_display_metadata
 fate-mastering_display_metadata: libavutil/tests/mastering_display_metadata$(EXESUF)
 fate-mastering_display_metadata: CMD = run libavutil/tests/mastering_display_metadata$(EXESUF)
