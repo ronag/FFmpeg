@@ -379,6 +379,7 @@ int av_log_format_line2(void *ptr, int level, const char *fmt, va_list vl,
 void av_log_default_callback(void* ptr, int level, const char* fmt, va_list vl)
 {
     static int print_prefix = 1;
+    static void *open_line_ctx;
     static int count;
     static char prev[LINE_SZ];
     AVBPrint part[5];
@@ -396,8 +397,18 @@ void av_log_default_callback(void* ptr, int level, const char* fmt, va_list vl)
         return;
     ff_mutex_lock(&mutex);
 
+    /* A line left open by one context (a message without a trailing newline)
+     * is continued only by that context. A message from any other context,
+     * e.g. one logged from another thread, ends that line first so that it
+     * starts on a line of its own, with its prefix. */
+    if (!print_prefix && ptr != open_line_ctx) {
+        colored_fputs(av_clip(level >> 3, 0, NB_LEVELS - 1), 0, "\n");
+        print_prefix = 1;
+    }
+
     format_line(ptr, level, fmt, vl, part, &print_prefix, type);
     snprintf(line, sizeof(line), "%s%s%s%s", part[0].str, part[1].str, part[2].str, part[3].str);
+    open_line_ctx = print_prefix ? NULL : ptr;
 
 #if HAVE_ISATTY
     if (!is_atty)
