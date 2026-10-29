@@ -1392,6 +1392,7 @@ TESTPROGS = avcodec                                                     \
             mathops                                                    \
             packet_side_data_handle                                     \
 
+TESTPROGS-$(CONFIG_AAC_ENCODER)           += aacpsy
 TESTPROGS-$(CONFIG_AC3DSP)                += ac3
 TESTPROGS-$(CONFIG_APV_DECODER)           += apv
 TESTPROGS-$(CONFIG_AV1_VAAPI_ENCODER)     += av1_levels
