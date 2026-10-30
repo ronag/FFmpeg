@@ -282,19 +282,24 @@ fate-aac-nmr-abr-encode: FUZZ = 15
 # A near-silent impulse in the short window before an onset sits ~90 dB under
 # the onset bands: the NMR trellis found no chain-legal scalefactor path and
 # re-encoded the frame forever
-FATE_AAC_NMR_CHAIN-$(call ALLYES, LAVFI_INDEV AEVALSRC_FILTER ARESAMPLE_FILTER PCM_F64LE_DECODER AAC_ENCODER NULL_MUXER) += fate-aac-nmr-chain-encode
+FATE_AAC_NMR_CHAIN-$(call ALLYES, LAVFI_INDEV AEVALSRC_FILTER ARESAMPLE_FILTER PCM_F64LE_DECODER PCM_F64BE_DECODER AAC_ENCODER NULL_MUXER) += fate-aac-nmr-chain-encode
 fate-aac-nmr-chain-encode: CMD = ffmpeg -auto_conversion_filters -f lavfi -i "aevalsrc=if(eq(n\,24000)\,1e-10\,0)+if(gte(n\,24256)\,0.01*sin(n*n*0.37+n)\,0):s=48000:d=1.5" -c:a aac -b:a 128k -fflags +bitexact -flags +bitexact -f null -
 fate-aac-nmr-chain-encode: CMP = null
 
 # Upstream issue #25580: the same chain break in an initial short frame.
-FATE_AAC_NMR_CHAIN-$(call ALLYES, LAVFI_INDEV AEVALSRC_FILTER ARESAMPLE_FILTER PCM_F64LE_DECODER AAC_ENCODER NULL_MUXER) += fate-aac-nmr-onset-encode
+FATE_AAC_NMR_CHAIN-$(call ALLYES, LAVFI_INDEV AEVALSRC_FILTER ARESAMPLE_FILTER PCM_F64LE_DECODER PCM_F64BE_DECODER AAC_ENCODER NULL_MUXER) += fate-aac-nmr-onset-encode
 fate-aac-nmr-onset-encode: CMD = ffmpeg -auto_conversion_filters -f lavfi -i "aevalsrc=1e-10*eq(n\,448)+gte(n\,704)*random(0):d=0.05" -c:a aac -fflags +bitexact -flags +bitexact -f null -
 fate-aac-nmr-onset-encode: CMP = null
 
 # Even a silent frame cannot meet a bitrate below its signalling overhead.
-FATE_AAC_NMR_CHAIN-$(call ALLYES, LAVFI_INDEV AEVALSRC_FILTER ARESAMPLE_FILTER PCM_F64LE_DECODER AAC_ENCODER NULL_MUXER) += fate-aac-strict-rate-encode
+FATE_AAC_NMR_CHAIN-$(call ALLYES, LAVFI_INDEV AEVALSRC_FILTER ARESAMPLE_FILTER PCM_F64LE_DECODER PCM_F64BE_DECODER AAC_ENCODER NULL_MUXER) += fate-aac-strict-rate-encode
 fate-aac-strict-rate-encode: CMD = ffmpeg -auto_conversion_filters -f lavfi -i "aevalsrc=0:s=48000:d=0.1" -c:a aac -b:a 1 -bt 0 -fflags +bitexact -flags +bitexact -f null -
 fate-aac-strict-rate-encode: CMP = null
+
+# Check packet legality as well as completion, including exhausted retries.
+FATE_AAC_NMR_CHAIN-$(call ALLYES, LAVFI_INDEV AEVALSRC_FILTER ARESAMPLE_FILTER PCM_F64LE_DECODER PCM_F64BE_DECODER AAC_ENCODER FRAMECRC_MUXER PIPE_PROTOCOL) += fate-aac-nmr-onset-packets fate-aac-overflow
+fate-aac-nmr-onset-packets: CMD = aacenc_frame_sizes 1 -auto_conversion_filters -f lavfi -i "aevalsrc=1e-10*eq(n\,448)+gte(n\,704)*random(0):d=0.05" -c:a aac -fflags +bitexact -flags +bitexact
+fate-aac-overflow: CMD = aacenc_frame_sizes 1 -auto_conversion_filters -f lavfi -i "aevalsrc=1e-10*eq(n\,448)+gte(n\,704)*random(0):d=0.05" -c:a aac -aac_coder twoloop -b:a 64k -fflags +bitexact -flags +bitexact
 
 tests/data/fate/aac-5_1_2.adts: TAG = GEN
 tests/data/fate/aac-5_1_2.adts: tests/data/asynth-44100-8.wav

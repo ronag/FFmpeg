@@ -622,7 +622,9 @@ static void nmr_chain_repair(NMRSlot *t, int step)
     }
 }
 
-/* Run every slot's trellis at one fixed lambda; returns the pooled bits. */
+/* Run every slot's trellis at one fixed lambda; returns the pooled bits.
+ * Chains are repaired after candidate-grid or active-list changes, so the
+ * lambda searches do not repeat the same feasibility scan. */
 static int nmr_eval_slots(AACEncContext *s, NMRSlot *const *sl, int nsl, int step, float lam)
 {
     int total = 0;
@@ -630,7 +632,6 @@ static int nmr_eval_slots(AACEncContext *s, NMRSlot *const *sl, int nsl, int ste
         NMRSlot *t = sl[k];
         if (!t->nact)
             continue;
-        nmr_chain_repair(t, step);
         nmr_solve(s, s->nmr->nd[t->si], s->nmr->nb[t->si], t->blo, t->bnc, step,
                   t->act, t->nact, 0, t->chosen, lam, lam, 1);
         total += nmr_slot_bits(t, s->nmr->nb[t->si], step);
@@ -659,6 +660,7 @@ static int nmr_shed_to_cap(AACEncContext *s, NMRSlot *const *sl, int nsl,
             nmr_drop_band(t, t->act[hi]);
             memmove(&t->act[hi], &t->act[hi + 1], (t->nact - hi - 1) * sizeof(t->act[0]));
             t->nact--;
+            nmr_chain_repair(t, NMR_STEP);
             dropped = 1;
         }
         if (!dropped)
@@ -854,8 +856,10 @@ static void nmr_solve_group(AVCodecContext *avctx, AACEncContext *s,
     const float lam_ref = (avctx->flags & AV_CODEC_FLAG_QSCALE) && avctx->global_quality > 0 ?
                           avctx->global_quality : 120.0f;
 
-    for (int k = 0; k < nsl; k++)
+    for (int k = 0; k < nsl; k++) {
+        nmr_chain_repair(sl[k], cstep);
         is8_any |= sl[k]->is8;
+    }
 
     /* decoupled solo solves keep per-channel slew state: sharing one
      * lam_slew clamps each channel against the OTHER's operating lambda */
@@ -1076,6 +1080,8 @@ static void nmr_solve_group(AVCodecContext *avctx, AACEncContext *s,
                 t->bnc[b] = FFMAX(1, ncand);
             }
         }
+        for (int k = 0; k < nsl; k++)
+            nmr_chain_repair(sl[k], NMR_STEP);
         /* fine pass: narrow corridor around the coarse solve */
         if (vbr && !vbr_subst) {
             float infl2 = is8_any ? s->nmr->vbr_infl[sl[0]->cur_ch & 15] : 0.0f;
@@ -1405,6 +1411,7 @@ static void nmr_solve_group(AVCodecContext *avctx, AACEncContext *s,
                     if (!t->is_pns[t->act[b_]])
                         t->act[n++] = t->act[b_];
                 t->nact = n;
+                nmr_chain_repair(t, NMR_STEP);
             }
             pns_total += pns_count;
         }

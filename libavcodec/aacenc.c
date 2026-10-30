@@ -1594,17 +1594,10 @@ static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
 
         frame_bits = put_bits_count(&s->pb);
 
-        /* A coder that cannot get under the decoder buffer would otherwise
-         * re-encode this frame forever: emit it oversized instead. The
-         * retries drove lambda to its floor; don't carry that into the next
-         * frame (the NMR coder never raises it again, and would hold every
-         * later frame to its smallest legality cap). */
-        if (its >= 16 && frame_bits >= 6144 * s->channels - 3) {
-            av_log(avctx, AV_LOG_WARNING, "Frame of %d bits exceeds the decoder buffer\n",
-                   frame_bits);
-            s->lambda = avctx->global_quality > 0 ? avctx->global_quality : 120;
+        /* Stop retrying a coder that cannot fit the decoder buffer. The
+         * common check below rejects the frame on every loop exit. */
+        if (its >= 16 && frame_bits >= 6144 * s->channels - 3)
             break;
-        }
 
         /* The NMR coder rate-controls itself (global-lambda reservoir servo):
          * per-frame bits intentionally float around the nominal rate, so skip
@@ -1669,6 +1662,11 @@ static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
             break;
         }
     } while (1);
+    if (frame_bits > 6144 * s->channels - 3) {
+        av_log(avctx, AV_LOG_ERROR, "Frame of %d bits exceeds the decoder buffer\n",
+               frame_bits);
+        return AVERROR_INVALIDDATA;
+    }
     if ((avctx->flags & AV_CODEC_FLAG_QSCALE) || avctx->bit_rate_tolerance == 0)
         s->lambda = avctx->global_quality > 0 ? avctx->global_quality : 120;
 

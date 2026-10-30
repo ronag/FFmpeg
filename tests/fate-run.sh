@@ -214,6 +214,19 @@ framecrc(){
     ffmpeg "$@" -bitexact -f framecrc -
 }
 
+aacenc_frame_sizes(){
+    channels=$1
+    shift
+    packetfile="${outdir}/${test}.packets"
+    cleanfiles="$cleanfiles $packetfile"
+    framecrc "$@" > "$packetfile"
+    echo "exit status: $?"
+    awk -F, -v cap="$((768 * channels))" '
+        !/^#/ && NF >= 6 { packets++; oversized += $5 > cap }
+        END { printf "packets: %d\noversized: %d\n", packets, oversized }
+    ' "$packetfile"
+}
+
 ffmetadata(){
     ffmpeg "$@" -bitexact -f ffmetadata -
 }
