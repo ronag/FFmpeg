@@ -74,7 +74,8 @@ static int thread_execute(AVFilterContext *ctx, avfilter_action_func *func,
 
 static int thread_init_internal(ThreadContext *c, int nb_threads)
 {
-    nb_threads = avpriv_slicethread_create2(&c->thread, c, worker_func, NULL, nb_threads);
+    nb_threads = avpriv_slicethread_create3(&c->thread, c, worker_func, NULL, nb_threads,
+                                            AVPRIV_SLICETHREAD_FLAG_SHARED);
     if (nb_threads <= 1)
         avpriv_slicethread_free(&c->thread);
     return FFMAX(nb_threads, 1);
