@@ -26,6 +26,7 @@
 #include "libavutil/cpu.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
+#include "libavutil/slicethread.h"
 #include "libavutil/thread.h"
 #include "avcodec.h"
 #include "avcodec_internal.h"
@@ -108,7 +109,9 @@ static void * attribute_align_arg worker(void *v){
         pkt   = task->outdata;
         avctx->frame_num = task->frame_num;
 
+        avpriv_slicethread_pool_enter();
         ret = ff_encode_encode_cb(avctx, pkt, frame, &task->got_packet);
+        avpriv_slicethread_pool_leave();
         pthread_mutex_lock(&c->finished_task_mutex);
         task->return_code = ret;
         task->finished    = 1;

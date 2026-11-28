@@ -24,6 +24,7 @@
 #include "pthread_internal.h"
 #include "threadprogress.h"
 #include "libavutil/attributes.h"
+#include "libavutil/slicethread.h"
 #include "libavutil/thread.h"
 
 DEFINE_OFFSET_ARRAY(ThreadProgress, thread_progress, init,
@@ -71,8 +72,10 @@ void ff_thread_progress_await(const ThreadProgress *pro_c, int n)
     if (atomic_load_explicit(&pro->progress, memory_order_acquire) >= n)
         return;
 
+    avpriv_slicethread_pool_block();
     ff_mutex_lock(&pro->progress_mutex);
     while (atomic_load_explicit(&pro->progress, memory_order_relaxed) < n)
         ff_cond_wait(&pro->progress_cond, &pro->progress_mutex);
     ff_mutex_unlock(&pro->progress_mutex);
+    avpriv_slicethread_pool_unblock();
 }
