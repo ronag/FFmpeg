@@ -1455,6 +1455,16 @@ as its own thread count (@option{-threads}, @option{-filter_threads}). Frame
 threading, and codecs whose slice jobs must all run at once, keep threads of
 their own.
 
+The pool also limits how many frames the frame threads of decoders and
+encoders work on at once to its number of active threads, at first
+@var{nb_threads}.
+
+@item -slice_thread_pool_pressure @var{percent} (@emph{global})
+With @option{-slice_thread_pool}, run fewer pool threads at once while the CPU
+pressure (PSI @samp{some}) of the process's cgroup, or else of the host, is
+above @var{percent}, and more again once it is below half of it. Checked every
+@option{-stats_period}. Linux only. Off by default.
+
 @item -filter_buffered_frames[:@var{media_type}] @var{nb_frames} (@emph{global})
 Defines the maximum number of buffered frames allowed in a filtergraph. Under
 normal circumstances, a filtergraph should not buffer more than a few frames,

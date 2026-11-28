@@ -69,6 +69,7 @@
 #endif
 
 #include "libavutil/bprint.h"
+#include "libavutil/cpu.h"
 #include "libavutil/dict.h"
 #include "libavutil/mem.h"
 #include "libavutil/time.h"
@@ -895,6 +896,84 @@ static int check_keyboard_interaction(int64_t cur_time)
     return 0;
 }
 
+/* Microseconds in all that some task of this process's cgroup, else of the
+ * host, waited for a CPU (PSI), or -1 without PSI. */
+static int64_t cpu_pressure_total(void)
+{
+#ifdef __linux__
+    static char path[1024];
+    char line[512];
+    int64_t total = -1;
+    FILE *f;
+
+    if (!path[0]) {
+        snprintf(path, sizeof(path), "/proc/pressure/cpu");
+        if ((f = fopen("/proc/self/cgroup", "r"))) {
+            while (fgets(line, sizeof(line), f)) {
+                if (!strncmp(line, "0::", 3)) {
+                    FILE *g;
+                    line[strcspn(line, "\n")] = 0;
+                    snprintf(path, sizeof(path), "/sys/fs/cgroup%s/cpu.pressure", line + 3);
+                    if ((g = fopen(path, "r")))
+                        fclose(g);
+                    else
+                        snprintf(path, sizeof(path), "/proc/pressure/cpu");
+                }
+            }
+            fclose(f);
+        }
+    }
+    if (!(f = fopen(path, "r")))
+        return -1;
+    if (fgets(line, sizeof(line), f) && !strncmp(line, "some ", 5)) {
+        const char *t = strstr(line, "total=");
+        if (t)
+            total = strtoll(t + 6, NULL, 10);
+    }
+    fclose(f);
+    return total;
+#else
+    return -1;
+#endif
+}
+
+/* Runs fewer pool threads at once while CPU pressure is high, and more again
+ * as it drops: down by a quarter above -slice_thread_pool_pressure, up by
+ * one below half of it. Pressure counts this process's own threads waiting
+ * for each other too, so the pool settles near the CPUs it actually gets. */
+static void adapt_slice_thread_pool(int64_t now)
+{
+    static int64_t last_now, last_total = -1;
+    static int active;
+    int64_t total;
+
+    if (slice_thread_pool_pressure <= 0 || !slice_thread_pool_size)
+        return;
+    if ((total = cpu_pressure_total()) < 0) {
+        av_log(NULL, AV_LOG_WARNING, "No CPU pressure to adapt the slice thread pool to\n");
+        slice_thread_pool_pressure = 0;
+        return;
+    }
+    if (!active)
+        active = slice_thread_pool_size;
+    if (last_total >= 0 && now > last_now) {
+        double pressure = 100.0 * (total - last_total) / (now - last_now);
+        int prev = active;
+
+        if (pressure > slice_thread_pool_pressure)
+            active = FFMAX(1, active - FFMAX(1, active / 4));
+        else if (pressure < slice_thread_pool_pressure / 2)
+            active = FFMIN(slice_thread_pool_size, active + 1);
+        if (active != prev) {
+            av_slice_thread_pool_set_active(active);
+            av_log(NULL, AV_LOG_VERBOSE, "CPU pressure %.0f%%, %d active slice pool threads\n",
+                   pressure, active);
+        }
+    }
+    last_total = total;
+    last_now   = now;
+}
+
 /*
  * The following code is the main loop of the file converter
  */
@@ -927,6 +1006,8 @@ static int transcode(Scheduler *sch)
         if (stdin_interaction)
             if (check_keyboard_interaction(cur_time) < 0)
                 break;
+
+        adapt_slice_thread_pool(cur_time);
 
         /* dump report by using the output first video and audio streams */
         print_report(0, timer_start, cur_time, transcode_ts);
