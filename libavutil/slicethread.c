@@ -72,7 +72,7 @@ struct AVSliceThread {
 };
 
 /*
- * The process-wide slice thread pool.
+ * The process-wide thread pool.
  *
  * An execute hands lanes 1 and up to idle pool threads and runs lane 0 on
  * the calling thread. Lanes it cannot hand out wait in the queue for a
@@ -92,7 +92,7 @@ struct AVSliceThread {
  * The pool also has one run slot per thread. A lane runs only with a slot,
  * and so do threads of their own that enter the pool, like frame threads,
  * for each frame. A slot holder that waits for another holder lends its slot
- * (avpriv_slicethread_pool_block()), and takes it back when it resumes
+ * (avpriv_thread_pool_block()), and takes it back when it resumes
  * without waiting, which may briefly run the pool over its size. So a
  * thread waits for a slot only before it starts work, and every slot holder
  * either runs, or waits for something that a running thread or a thread
@@ -114,7 +114,7 @@ static struct {
     int            *idle;           ///< idle thread indices, most recently busy last
     int             nb_idle;
     AVSliceThread  *queue;          ///< executes with lanes left, oldest first
-    int             nb_active;      ///< run slots in all, see av_slice_thread_pool_set_active()
+    int             nb_active;      ///< run slots in all, see av_thread_pool_set_active()
     int             slots;          ///< run slots left, below 0 while resumed threads run over
     int             nb_slot_waiters;
     pthread_cond_t  slot_cond;
@@ -322,7 +322,7 @@ static int pool_execute(AVSliceThread *ctx, int nb_jobs)
     return atomic_load_explicit(&ctx->error, memory_order_relaxed);
 }
 
-int av_slice_thread_pool_init(int nb_threads)
+int av_thread_pool_init(int nb_threads)
 {
     int ret = 0;
 
@@ -388,7 +388,7 @@ end:
     return ret;
 }
 
-int av_slice_thread_pool_set_active(int nb_active)
+int av_thread_pool_set_active(int nb_active)
 {
     if (nb_active < 1)
         return AVERROR(EINVAL);
@@ -407,7 +407,7 @@ int av_slice_thread_pool_set_active(int nb_active)
     return 0;
 }
 
-void avpriv_slicethread_pool_enter(void)
+void avpriv_thread_pool_enter(void)
 {
     if (slot_held || !atomic_load_explicit(&pool_ready, memory_order_acquire))
         return;
@@ -424,7 +424,7 @@ void avpriv_slicethread_pool_enter(void)
     slot_held = 1;
 }
 
-void avpriv_slicethread_pool_leave(void)
+void avpriv_thread_pool_leave(void)
 {
     if (!slot_held)
         return;
@@ -434,7 +434,7 @@ void avpriv_slicethread_pool_leave(void)
     pthread_mutex_unlock(&pool.lock);
 }
 
-void avpriv_slicethread_pool_block(void)
+void avpriv_thread_pool_block(void)
 {
     if (!slot_held)
         return;
@@ -445,7 +445,7 @@ void avpriv_slicethread_pool_block(void)
     pthread_mutex_unlock(&pool.lock);
 }
 
-void avpriv_slicethread_pool_unblock(void)
+void avpriv_thread_pool_unblock(void)
 {
     if (!slot_lent)
         return;
@@ -779,20 +779,20 @@ int avpriv_slicethread_create3(AVSliceThread **pctx, void *priv,
     return AVERROR(ENOSYS);
 }
 
-int av_slice_thread_pool_init(int nb_threads)
+int av_thread_pool_init(int nb_threads)
 {
     return AVERROR(ENOSYS);
 }
 
-int av_slice_thread_pool_set_active(int nb_active)
+int av_thread_pool_set_active(int nb_active)
 {
     return AVERROR(ENOSYS);
 }
 
-void avpriv_slicethread_pool_enter(void) {}
-void avpriv_slicethread_pool_leave(void) {}
-void avpriv_slicethread_pool_block(void) {}
-void avpriv_slicethread_pool_unblock(void) {}
+void avpriv_thread_pool_enter(void) {}
+void avpriv_thread_pool_leave(void) {}
+void avpriv_thread_pool_block(void) {}
+void avpriv_thread_pool_unblock(void) {}
 
 int avpriv_slicethread_execute2(AVSliceThread *ctx, int nb_jobs, int execute_main)
 {

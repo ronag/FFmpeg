@@ -73,8 +73,8 @@ int stdin_interaction = 1;
 float max_error_rate  = 2.0/3;
 char *filter_nbthreads;
 int filter_complex_nbthreads = 0;
-int slice_thread_pool_size = 0;
-float slice_thread_pool_pressure = 0;
+int thread_pool_size = 0;
+float thread_pool_pressure = 0;
 int filter_buffered_frames[AVMEDIA_TYPE_NB] = {0};
 int vstats_version = 2;
 int print_graphs = 0;
@@ -470,19 +470,19 @@ static int opt_filter_threads(void *optctx, const char *opt, const char *arg)
     return 0;
 }
 
-static int opt_slice_thread_pool(void *optctx, const char *opt, const char *arg)
+static int opt_thread_pool(void *optctx, const char *opt, const char *arg)
 {
     double nb_threads;
     int ret = parse_number(opt, arg, OPT_TYPE_INT, 0, INT_MAX, &nb_threads);
     if (ret < 0)
         return ret;
 
-    ret = av_slice_thread_pool_init(nb_threads);
+    ret = av_thread_pool_init(nb_threads);
     if (ret < 0)
-        av_log(NULL, AV_LOG_ERROR, "Failed to create the slice thread pool: %s\n",
+        av_log(NULL, AV_LOG_ERROR, "Failed to create the thread pool: %s\n",
                av_err2str(ret));
     else
-        slice_thread_pool_size = nb_threads ? nb_threads : av_cpu_count();
+        thread_pool_size = nb_threads ? nb_threads : av_cpu_count();
     return ret;
 }
 
@@ -1797,12 +1797,12 @@ const OptionDef options[] = {
     { "filter_threads",         OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_filter_threads },
         "number of non-complex filter threads" },
-    { "slice_thread_pool",      OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
-        { .func_arg = opt_slice_thread_pool },
-        "share one pool of slice threads between all decoders, encoders, filters and scalers", "nb_threads" },
-    { "slice_thread_pool_pressure", OPT_TYPE_FLOAT, OPT_EXPERT,
-        { &slice_thread_pool_pressure },
-        "run fewer slice thread pool threads at once while CPU pressure is above this percentage", "percent" },
+    { "thread_pool",      OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
+        { .func_arg = opt_thread_pool },
+        "share one thread pool between all decoders, encoders, filters and scalers", "nb_threads" },
+    { "thread_pool_pressure", OPT_TYPE_FLOAT, OPT_EXPERT,
+        { &thread_pool_pressure },
+        "run fewer thread pool threads at once while CPU pressure is above this percentage", "percent" },
     { "filter_buffered_frames", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_filter_buffered_frames },
         "maximum number of buffered audio/video frames in a filter graph", "nb_frames" },

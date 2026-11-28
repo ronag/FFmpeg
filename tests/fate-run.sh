@@ -27,7 +27,7 @@ hwaccel=${17:-none}
 report_type=${18:-standard}
 keep=${19:-0}
 test "$keep" -ge 1 || cleanfiles=${20}
-slice_thread_pool=${21}
+thread_pool=${21}
 
 outdir="tests/data/fate"
 outfile="${outdir}/${test}"
@@ -195,7 +195,7 @@ probegaplessinfo(){
 ffmpeg(){
     dec_opts="-hwaccel $hwaccel -threads $threads -thread_type $thread_type"
     ffmpeg_args="-nostdin -nostats -noauto_conversion_filters -cpuflags $cpuflags"
-    [ -n "$slice_thread_pool" ] && ffmpeg_args="${ffmpeg_args} -slice_thread_pool $slice_thread_pool"
+    [ -n "$thread_pool" ] && ffmpeg_args="${ffmpeg_args} -thread_pool $thread_pool"
     for arg in $@; do
         [ x${arg} = x-i ] && ffmpeg_args="${ffmpeg_args} ${dec_opts}"
         ffmpeg_args="${ffmpeg_args} ${arg}"

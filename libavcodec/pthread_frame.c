@@ -258,7 +258,7 @@ static attribute_align_arg void *frame_worker_thread(void *arg)
 
         /* Waiting for a run slot holds only p->mutex, which nobody takes
          * until this frame is done. */
-        avpriv_slicethread_pool_enter();
+        avpriv_thread_pool_enter();
 
         if (!codec->update_thread_context)
             ff_thread_finish_setup(avctx);
@@ -324,7 +324,7 @@ alloc_fail:
             async_unlock(p->parent);
         }
 
-        avpriv_slicethread_pool_leave();
+        avpriv_thread_pool_leave();
 
         pthread_mutex_lock(&p->progress_mutex);
 
@@ -673,12 +673,12 @@ void ff_thread_await_progress(const ThreadFrame *f, int n, int field)
         av_log(f->owner[field], AV_LOG_DEBUG,
                "thread awaiting %d field %d from %p\n", n, field, progress);
 
-    avpriv_slicethread_pool_block();
+    avpriv_thread_pool_block();
     pthread_mutex_lock(&p->progress_mutex);
     while (atomic_load_explicit(&progress[field], memory_order_relaxed) < n)
         pthread_cond_wait(&p->progress_cond, &p->progress_mutex);
     pthread_mutex_unlock(&p->progress_mutex);
-    avpriv_slicethread_pool_unblock();
+    avpriv_thread_pool_unblock();
 }
 
 void ff_thread_finish_setup(AVCodecContext *avctx) {

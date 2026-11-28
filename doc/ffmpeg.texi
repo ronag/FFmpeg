@@ -1447,7 +1447,7 @@ Defines how many threads are used to process a filter pipeline. Each pipeline
 will produce a thread pool with this many threads available for parallel processing.
 The default is the number of available CPUs.
 
-@item -slice_thread_pool @var{nb_threads} (@emph{global})
+@item -thread_pool @var{nb_threads} (@emph{global})
 Run the slice threading of all decoders, encoders, filter graphs and scalers
 on one shared pool of @var{nb_threads} threads, 0 for one per CPU, instead of
 each starting threads of its own. Each still runs at most as many jobs at once
@@ -1459,8 +1459,8 @@ The pool also limits how many frames the frame threads of decoders and
 encoders work on at once to its number of active threads, at first
 @var{nb_threads}.
 
-@item -slice_thread_pool_pressure @var{percent} (@emph{global})
-With @option{-slice_thread_pool}, run fewer pool threads at once while the CPU
+@item -thread_pool_pressure @var{percent} (@emph{global})
+With @option{-thread_pool}, run fewer pool threads at once while the CPU
 pressure (PSI @samp{some}) of the process's cgroup, or else of the host, is
 above @var{percent}, and more again once it is below half of it. Checked every
 @option{-stats_period}. Linux only. Off by default.

@@ -91,7 +91,7 @@
 /**
  * The slice threading jobs of one execute wait on jobs with a higher jobnr,
  * so they must all run at once, on threads of the codec's own instead of the
- * shared slice thread pool.
+ * shared thread pool.
  */
 #define FF_CODEC_CAP_SLICE_THREAD_CONCURRENT (1 << 11)
 

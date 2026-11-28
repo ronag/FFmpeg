@@ -194,13 +194,13 @@ static void *slot_user(void *arg)
     for (int i = 0; i < 20; i++) {
         int n;
 
-        avpriv_slicethread_pool_enter();
+        avpriv_thread_pool_enter();
         n = atomic_fetch_add(&running, 1) + 1;
         for (int m = atomic_load(&max_running); n > m && !atomic_compare_exchange_weak(&max_running, &m, n);)
             ;
         av_usleep(200);
         atomic_fetch_sub(&running, 1);
-        avpriv_slicethread_pool_leave();
+        avpriv_thread_pool_leave();
     }
     return NULL;
 }
@@ -224,14 +224,14 @@ static void *frame(void *arg)
     int n = (intptr_t)arg;
     Test t;
 
-    avpriv_slicethread_pool_enter();
+    avpriv_thread_pool_enter();
     if (n) {
-        avpriv_slicethread_pool_block();
+        avpriv_thread_pool_block();
         ff_mutex_lock(&frame_lock);
         while (!atomic_load(&frame_done[n - 1]))
             ff_cond_wait(&frame_cond, &frame_lock);
         ff_mutex_unlock(&frame_lock);
-        avpriv_slicethread_pool_unblock();
+        avpriv_thread_pool_unblock();
     }
     if (!init(&t, 4, 0, AVPRIV_SLICETHREAD_FLAG_SHARED)) {
         t.chain = 1;
@@ -242,7 +242,7 @@ static void *frame(void *arg)
     atomic_store(&frame_done[n], 1);
     ff_cond_broadcast(&frame_cond);
     ff_mutex_unlock(&frame_lock);
-    avpriv_slicethread_pool_leave();
+    avpriv_thread_pool_leave();
     return NULL;
 }
 
@@ -267,11 +267,11 @@ int main(void)
     ff_cond_init(&frame_cond, NULL);
 
     /* Without the pool, run slots are no-ops. */
-    avpriv_slicethread_pool_enter();
-    avpriv_slicethread_pool_block();
-    avpriv_slicethread_pool_unblock();
-    avpriv_slicethread_pool_leave();
-    CHECK(av_slice_thread_pool_set_active(1) == AVERROR(EINVAL));
+    avpriv_thread_pool_enter();
+    avpriv_thread_pool_block();
+    avpriv_thread_pool_unblock();
+    avpriv_thread_pool_leave();
+    CHECK(av_thread_pool_set_active(1) == AVERROR(EINVAL));
 
     /* Before the pool exists, contexts get threads of their own and run all
      * jobs at once, so jobs may wait for any other job to start. */
@@ -281,8 +281,8 @@ int main(void)
     CHECK(!run(&t, 4));
     uninit(&t);
 
-    CHECK(av_slice_thread_pool_init(3) == 0);
-    CHECK(av_slice_thread_pool_init(3) == AVERROR(EEXIST));
+    CHECK(av_thread_pool_init(3) == 0);
+    CHECK(av_thread_pool_init(3) == AVERROR(EEXIST));
 
     /* A main_func runs alongside the jobs, so it keeps threads of its own. */
     if (init(&t, 4, 1, AVPRIV_SLICETHREAD_FLAG_SHARED) < 0)
@@ -311,8 +311,8 @@ int main(void)
         pthread_join(callers[i], NULL);
 
     CHECK(max_slot_users() <= 3);
-    CHECK(av_slice_thread_pool_set_active(0) == AVERROR(EINVAL));
-    CHECK(!av_slice_thread_pool_set_active(1));
+    CHECK(av_thread_pool_set_active(0) == AVERROR(EINVAL));
+    CHECK(!av_thread_pool_set_active(1));
     CHECK(max_slot_users() == 1);
 
     /* With one slot, newer frames start first and take it, then wait on older
@@ -326,7 +326,7 @@ int main(void)
         for (int i = 0; i < NB_FRAMES; i++)
             CHECK(atomic_load(&frame_done[i]));
     }
-    CHECK(!av_slice_thread_pool_set_active(3));
+    CHECK(!av_thread_pool_set_active(3));
     CHECK(max_slot_users() <= 3);
 
     atomic_store(&finished, 1);

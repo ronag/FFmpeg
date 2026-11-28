@@ -152,16 +152,16 @@ void av_cpu_force_count(int count);
  * @param nb_threads number of pool threads, 0 for one per CPU
  * The pool also limits how many frames frame threads of decoders and
  * encoders decode or encode at once, to its number of active threads; see
- * av_slice_thread_pool_set_active().
+ * av_thread_pool_set_active().
  *
  * @return 0 on success, AVERROR(EEXIST) if the pool already exists,
  *         AVERROR(ENOSYS) without thread support, or another negative
  *         AVERROR if no thread could be started
  */
-int av_slice_thread_pool_init(int nb_threads);
+int av_thread_pool_init(int nb_threads);
 
 /**
- * Change how much of the slice thread pool's work runs at once: its slice
+ * Change how much of the thread pool's work runs at once: its slice
  * jobs and the frames of frame threads. Starts at the number of pool
  * threads, and may be set higher. Lowering it interrupts nothing: it takes
  * effect as running work finishes. Threads that call into the libraries
@@ -171,7 +171,7 @@ int av_slice_thread_pool_init(int nb_threads);
  * @return 0 on success, AVERROR(EINVAL) without the pool or for an invalid
  *         nb_active, AVERROR(ENOSYS) without thread support
  */
-int av_slice_thread_pool_set_active(int nb_active);
+int av_thread_pool_set_active(int nb_active);
 
 /**
  * Get the maximum data alignment that may be required by FFmpeg.

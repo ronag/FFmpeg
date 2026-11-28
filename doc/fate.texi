@@ -270,9 +270,9 @@ errfile.
 Specify which threading strategy test, either @samp{slice} or @samp{frame},
 by default @samp{slice+frame}
 
-@item SLICE_THREAD_POOL
+@item THREAD_POOL
 Run the slice threading of each @command{ffmpeg} test on a shared pool of this
-many threads (@option{-slice_thread_pool}), 0 for one per CPU. Unset by default.
+many threads (@option{-thread_pool}), 0 for one per CPU. Unset by default.
 
 @item CPUFLAGS
 Specify CPU flags.

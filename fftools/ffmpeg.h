@@ -770,8 +770,8 @@ extern float max_error_rate;
 
 extern char *filter_nbthreads;
 extern int filter_complex_nbthreads;
-extern int slice_thread_pool_size;
-extern float slice_thread_pool_pressure;
+extern int thread_pool_size;
+extern float thread_pool_pressure;
 extern int filter_buffered_frames[AVMEDIA_TYPE_NB];
 extern int vstats_version;
 extern int print_graphs;

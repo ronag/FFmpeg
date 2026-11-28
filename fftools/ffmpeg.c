@@ -938,35 +938,35 @@ static int64_t cpu_pressure_total(void)
 }
 
 /* Runs fewer pool threads at once while CPU pressure is high, and more again
- * as it drops: down by a quarter above -slice_thread_pool_pressure, up by
+ * as it drops: down by a quarter above -thread_pool_pressure, up by
  * one below half of it. Pressure counts this process's own threads waiting
  * for each other too, so the pool settles near the CPUs it actually gets. */
-static void adapt_slice_thread_pool(int64_t now)
+static void adapt_thread_pool(int64_t now)
 {
     static int64_t last_now, last_total = -1;
     static int active;
     int64_t total;
 
-    if (slice_thread_pool_pressure <= 0 || !slice_thread_pool_size)
+    if (thread_pool_pressure <= 0 || !thread_pool_size)
         return;
     if ((total = cpu_pressure_total()) < 0) {
-        av_log(NULL, AV_LOG_WARNING, "No CPU pressure to adapt the slice thread pool to\n");
-        slice_thread_pool_pressure = 0;
+        av_log(NULL, AV_LOG_WARNING, "No CPU pressure to adapt the thread pool to\n");
+        thread_pool_pressure = 0;
         return;
     }
     if (!active)
-        active = slice_thread_pool_size;
+        active = thread_pool_size;
     if (last_total >= 0 && now > last_now) {
         double pressure = 100.0 * (total - last_total) / (now - last_now);
         int prev = active;
 
-        if (pressure > slice_thread_pool_pressure)
+        if (pressure > thread_pool_pressure)
             active = FFMAX(1, active - FFMAX(1, active / 4));
-        else if (pressure < slice_thread_pool_pressure / 2)
-            active = FFMIN(slice_thread_pool_size, active + 1);
+        else if (pressure < thread_pool_pressure / 2)
+            active = FFMIN(thread_pool_size, active + 1);
         if (active != prev) {
-            av_slice_thread_pool_set_active(active);
-            av_log(NULL, AV_LOG_VERBOSE, "CPU pressure %.0f%%, %d active slice pool threads\n",
+            av_thread_pool_set_active(active);
+            av_log(NULL, AV_LOG_VERBOSE, "CPU pressure %.0f%%, %d active pool threads\n",
                    pressure, active);
         }
     }
@@ -1007,7 +1007,7 @@ static int transcode(Scheduler *sch)
             if (check_keyboard_interaction(cur_time) < 0)
                 break;
 
-        adapt_slice_thread_pool(cur_time);
+        adapt_thread_pool(cur_time);
 
         /* dump report by using the output first video and audio streams */
         print_report(0, timer_start, cur_time, transcode_ts);

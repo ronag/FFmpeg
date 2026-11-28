@@ -39,8 +39,8 @@ int avpriv_slicethread_create2(AVSliceThread **pctx, void *priv,
                                int nb_threads);
 
 /**
- * The jobs of one execute may run on the process-wide slice thread pool
- * (av_slice_thread_pool_init()) instead of threads of the context's own.
+ * The jobs of one execute may run on the process-wide thread pool
+ * (av_thread_pool_init()) instead of threads of the context's own.
  *
  * On the pool, an execute may get fewer threads than nb_threads, down to
  * just the calling thread, which claims jobs in jobnr order until none are
@@ -55,28 +55,28 @@ int avpriv_slicethread_create2(AVSliceThread **pctx, void *priv,
 #define AVPRIV_SLICETHREAD_FLAG_SHARED (1 << 0)
 
 /**
- * Wait for a run slot of the shared slice thread pool, and hold it until
- * avpriv_slicethread_pool_leave(). The pool runs at most as many slot
+ * Wait for a run slot of the shared thread pool, and hold it until
+ * avpriv_thread_pool_leave(). The pool runs at most as many slot
  * holders at once as it has slots, its slice lanes included. For threads of
  * their own that do the same kind of work, like frame threads for each
  * frame. Returns at once without the pool, or if the thread holds a slot.
  */
-void avpriv_slicethread_pool_enter(void);
+void avpriv_thread_pool_enter(void);
 
 /**
- * Give back the run slot taken by avpriv_slicethread_pool_enter().
+ * Give back the run slot taken by avpriv_thread_pool_enter().
  */
-void avpriv_slicethread_pool_leave(void);
+void avpriv_thread_pool_leave(void);
 
 /**
  * Bracket a wait that another slot holder may have to end, such as waiting
  * for another frame's progress: the slot is free for others meanwhile.
- * avpriv_slicethread_pool_unblock() takes it back without waiting, so a
+ * avpriv_thread_pool_unblock() takes it back without waiting, so a
  * thread that resumes never waits for a slot, and the pool may run over its
  * size until holders leave or block. No-ops for a thread without a slot.
  */
-void avpriv_slicethread_pool_block(void);
-void avpriv_slicethread_pool_unblock(void);
+void avpriv_thread_pool_block(void);
+void avpriv_thread_pool_unblock(void);
 
 /**
  * Like avpriv_slicethread_create2(), with AVPRIV_SLICETHREAD_FLAG_* flags.
