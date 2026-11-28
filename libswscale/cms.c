@@ -735,7 +735,8 @@ int ff_sws_color_map_generate_dynamic(v3u16_t *input, v3u16_t *output,
                                                ctx.dst.wp, ctx.src.wp);
     }
 
-    ret = avpriv_slicethread_create2(&slicethread, &ctx, generate_slice, NULL, 0);
+    ret = avpriv_slicethread_create3(&slicethread, &ctx, generate_slice, NULL, 0,
+                                     AVPRIV_SLICETHREAD_FLAG_SHARED);
     if (ret < 0)
         return ret;
 
