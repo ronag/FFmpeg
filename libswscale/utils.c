@@ -1928,8 +1928,9 @@ static int context_init_threaded(SwsContext *sws,
     SwsInternal *c = sws_internal(sws);
     int ret;
 
-    ret = avpriv_slicethread_create2(&c->slicethread, (void*) sws,
-                                     ff_sws_slice_worker, NULL, sws->threads);
+    ret = avpriv_slicethread_create3(&c->slicethread, (void*) sws,
+                                     ff_sws_slice_worker, NULL, sws->threads,
+                                     AVPRIV_SLICETHREAD_FLAG_SHARED);
     if (ret == AVERROR(ENOSYS)) {
         sws->threads = 1;
         return 0;
@@ -2534,7 +2535,8 @@ int ff_sws_thread_exec(void *priv,
                        int nb_threads, int nb_jobs)
 {
     AVSliceThread *slicethread;
-    int ret = avpriv_slicethread_create2(&slicethread, priv, func, NULL, nb_threads);
+    int ret = avpriv_slicethread_create3(&slicethread, priv, func, NULL, nb_threads,
+                                         AVPRIV_SLICETHREAD_FLAG_SHARED);
     if (ret == AVERROR(ENOSYS)) {
         /* Fallback for build configurations without threading */
         for (int i = 0; i < nb_jobs; i++) {

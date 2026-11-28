@@ -916,8 +916,9 @@ int ff_sws_graph_init(SwsGraph *graph, SwsContext *ctx, const SwsFormat *dst,
     if (ctx->threads == 1) {
         graph->num_threads = 1;
     } else {
-        ret = avpriv_slicethread_create2(&graph->slicethread, (void *) graph,
-                                         sws_graph_worker, NULL, ctx->threads);
+        ret = avpriv_slicethread_create3(&graph->slicethread, (void *) graph,
+                                         sws_graph_worker, NULL, ctx->threads,
+                                         AVPRIV_SLICETHREAD_FLAG_SHARED);
         if (ret == AVERROR(ENOSYS)) {
             /* Fall back to single threaded operation */
             graph->num_threads = 1;
