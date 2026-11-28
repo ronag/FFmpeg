@@ -2998,7 +2998,10 @@ const FFCodec ff_vp8_decoder = {
     FF_CODEC_DECODE_CB(vp8_decode_frame),
     .p.capabilities        = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS |
                              AV_CODEC_CAP_SLICE_THREADS,
-    .caps_internal         = FF_CODEC_CAP_USES_PROGRESSFRAMES,
+    // Each job decodes every num_jobs-th row, waiting on the rows of the jobs
+    // before and after it; job 0's previous job is the last one.
+    .caps_internal         = FF_CODEC_CAP_USES_PROGRESSFRAMES |
+                             FF_CODEC_CAP_SLICE_THREAD_CONCURRENT,
     .flush                 = vp8_decode_flush,
     UPDATE_THREAD_CONTEXT(vp8_decode_update_thread_context),
     .hw_configs            = (const AVCodecHWConfigInternal *const []) {

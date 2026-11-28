@@ -88,6 +88,12 @@
  * encoders do.
  */
 #define FF_CODEC_CAP_EOF_FLUSH              (1 << 10)
+/**
+ * The slice threading jobs of one execute wait on jobs with a higher jobnr,
+ * so they must all run at once, on threads of the codec's own instead of the
+ * shared slice thread pool.
+ */
+#define FF_CODEC_CAP_SLICE_THREAD_CONCURRENT (1 << 11)
 
 /**
  * FFCodec.codec_tags termination value
