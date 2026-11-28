@@ -123,7 +123,11 @@ static atomic_int pool_ready;
 static AVMutex pool_init_lock = AV_MUTEX_INITIALIZER;
 
 /* Whether this thread holds a run slot, or lent it while it waits. */
+#ifdef _MSC_VER
+static __declspec(thread) int slot_held, slot_lent;
+#else
 static _Thread_local int slot_held, slot_lent;
+#endif
 
 static int auto_threads(int nb_threads)
 {
@@ -199,23 +203,30 @@ static int pool_join_queued(PoolThread *t)
     return 0;
 }
 
-/* Gives a run slot back: to a thread waiting to enter, or else to an idle
- * thread for a queued execute if dispatch is set. */
-static void pool_put_slot(int dispatch)
+/* Give available slots to waiting frame threads first, then to slice lanes. */
+static void pool_wake(int dispatch)
 {
-    if (++pool.slots <= 0)
+    if (pool.slots <= 0)
         return;
     if (pool.nb_slot_waiters) {
         pthread_cond_signal(&pool.slot_cond);
-    } else if (dispatch && pool.nb_idle) {
+        return;
+    }
+    while (dispatch && pool.nb_idle && pool.slots > 0 && pool.queue) {
         PoolThread *t = &pool.threads[pool.idle[pool.nb_idle - 1]];
 
-        if (pool_join_queued(t)) {
-            pool.nb_idle--;
-            t->idle_pos = -1;
-            pthread_cond_signal(&t->cond);
-        }
+        if (!pool_join_queued(t))
+            break;
+        pool.nb_idle--;
+        t->idle_pos = -1;
+        pthread_cond_signal(&t->cond);
     }
+}
+
+static void pool_put_slot(int dispatch)
+{
+    pool.slots++;
+    pool_wake(dispatch);
 }
 
 static void *attribute_align_arg pool_thread(void *arg)
@@ -389,6 +400,11 @@ end:
     return ret;
 }
 
+int av_thread_pool_get_size(void)
+{
+    return atomic_load_explicit(&pool_ready, memory_order_acquire) ? pool.nb_threads : 0;
+}
+
 int av_thread_pool_set_active(int nb_active)
 {
     if (nb_active < 1)
@@ -398,11 +414,9 @@ int av_thread_pool_set_active(int nb_active)
 
     pthread_mutex_lock(&pool.lock);
     /* Fewer slots take effect as holders give theirs back. */
-    if (nb_active < pool.nb_active)
-        pool.slots -= pool.nb_active - nb_active;
-    else
-        for (int i = pool.nb_active; i < nb_active; i++)
-            pool_put_slot(1);
+    pool.slots += nb_active - pool.nb_active;
+    if (nb_active > pool.nb_active)
+        pool_wake(1);
     pool.nb_active = nb_active;
     pthread_mutex_unlock(&pool.lock);
     return 0;
@@ -419,8 +433,7 @@ void avpriv_thread_pool_enter(void)
         pthread_cond_wait(&pool.slot_cond, &pool.lock);
     pool.nb_slot_waiters--;
     pool.slots--;
-    if (pool.slots > 0 && pool.nb_slot_waiters)
-        pthread_cond_signal(&pool.slot_cond);
+    pool_wake(1);
     pthread_mutex_unlock(&pool.lock);
     slot_held = 1;
 }
@@ -788,6 +801,11 @@ int av_thread_pool_init(int nb_threads)
 int av_thread_pool_set_active(int nb_active)
 {
     return AVERROR(ENOSYS);
+}
+
+int av_thread_pool_get_size(void)
+{
+    return 0;
 }
 
 void avpriv_thread_pool_enter(void) {}

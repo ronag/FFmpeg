@@ -149,16 +149,22 @@ void av_cpu_force_count(int count);
  *
  * The pool exists until the process exits. Do not fork() after calling this.
  *
- * @param nb_threads number of pool threads, 0 for one per CPU
  * The pool also limits how many frames frame threads of decoders and
  * encoders decode or encode at once, to its number of active threads; see
  * av_thread_pool_set_active().
  *
+ * @param nb_threads requested number of pool threads, 0 for one per CPU
  * @return 0 on success, AVERROR(EEXIST) if the pool already exists,
  *         AVERROR(ENOSYS) without thread support, or another negative
  *         AVERROR if no thread could be started
  */
 int av_thread_pool_init(int nb_threads);
+
+/**
+ * Return the number of pool threads actually started, or zero without a pool.
+ * This count stays fixed when av_thread_pool_set_active() changes the limit.
+ */
+int av_thread_pool_get_size(void);
 
 /**
  * Change how much of the thread pool's work runs at once: its slice

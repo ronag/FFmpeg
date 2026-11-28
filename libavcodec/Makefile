@@ -1401,6 +1401,7 @@ TESTPROGS-$(CONFIG_CABAC)                 += cabac
 TESTPROGS-$(CONFIG_CAVS_DECODER)          += cavsdsp
 TESTPROGS-$(CONFIG_CELP_MATH)             += celp_math
 TESTPROGS-$(CONFIG_ENCODERS)              += hw_base_encode
+TESTPROGS-$(HAVE_THREADS)                 += frame_thread_pool
 TESTPROGS-$(CONFIG_GOLOMB)                += golomb
 TESTPROGS-$(CONFIG_IDCTDSP)               += dct
 TESTPROGS-$(CONFIG_DXV_ENCODER)           += hashtable

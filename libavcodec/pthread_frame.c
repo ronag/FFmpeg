@@ -160,8 +160,15 @@ static int hwaccel_serial(const AVCodecContext *avctx)
 static void async_lock(FrameThreadContext *fctx)
 {
     pthread_mutex_lock(&fctx->async_mutex);
-    while (fctx->async_lock)
-        pthread_cond_wait(&fctx->async_cond, &fctx->async_mutex);
+    if (fctx->async_lock) {
+        /* The caller can be using another decoder on the same pool before
+         * it next releases this decoder's async lock. */
+        avpriv_thread_pool_block();
+        do {
+            pthread_cond_wait(&fctx->async_cond, &fctx->async_mutex);
+        } while (fctx->async_lock);
+        avpriv_thread_pool_unblock();
+    }
     fctx->async_lock = 1;
     pthread_mutex_unlock(&fctx->async_mutex);
 }

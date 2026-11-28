@@ -482,7 +482,7 @@ static int opt_thread_pool(void *optctx, const char *opt, const char *arg)
         av_log(NULL, AV_LOG_ERROR, "Failed to create the thread pool: %s\n",
                av_err2str(ret));
     else
-        thread_pool_size = nb_threads ? nb_threads : FFMAX(av_cpu_count(), 1);
+        thread_pool_size = av_thread_pool_get_size();
     return ret;
 }
 

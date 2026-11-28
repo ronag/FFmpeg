@@ -27,7 +27,7 @@ hwaccel=${17:-none}
 report_type=${18:-standard}
 keep=${19:-0}
 test "$keep" -ge 1 || cleanfiles=${20}
-thread_pool=${21}
+thread_pool_opts=${21:+-thread_pool ${21}}
 
 outdir="tests/data/fate"
 outfile="${outdir}/${test}"
@@ -195,12 +195,11 @@ probegaplessinfo(){
 ffmpeg(){
     dec_opts="-hwaccel $hwaccel -threads $threads -thread_type $thread_type"
     ffmpeg_args="-nostdin -nostats -noauto_conversion_filters -cpuflags $cpuflags"
-    [ -n "$thread_pool" ] && ffmpeg_args="${ffmpeg_args} -thread_pool $thread_pool"
     for arg in $@; do
         [ x${arg} = x-i ] && ffmpeg_args="${ffmpeg_args} ${dec_opts}"
         ffmpeg_args="${ffmpeg_args} ${arg}"
     done
-    run ffmpeg${PROGSUF}${EXECSUF} ${ffmpeg_args}
+    run ffmpeg${PROGSUF}${EXECSUF} $thread_pool_opts ${ffmpeg_args}
 }
 
 ffprobe_demux(){
@@ -417,7 +416,7 @@ echov(){
     echo "$@" >&3
 }
 
-AVCONV_OPTS="-nostdin -nostats -noauto_conversion_filters -y -cpuflags $cpuflags -filter_threads $threads"
+AVCONV_OPTS="$thread_pool_opts -nostdin -nostats -noauto_conversion_filters -y -cpuflags $cpuflags -filter_threads $threads"
 COMMON_OPTS="-flags +bitexact -idct simple -sws_flags $SCALE_FLAGS -fflags +bitexact"
 DEC_OPTS="$COMMON_OPTS -threads $threads"
 ENC_OPTS="$COMMON_OPTS -threads 1 -dct fastint"

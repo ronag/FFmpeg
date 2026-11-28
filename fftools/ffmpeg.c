@@ -962,8 +962,8 @@ static void adapt_thread_pool(int64_t now)
 
         if (pressure > thread_pool_pressure)
             active = FFMAX(1, active - FFMAX(1, active / 4));
-        else if (pressure < thread_pool_pressure / 2)
-            active = FFMIN(thread_pool_size, active + 1);
+        else if (pressure < thread_pool_pressure / 2 && active < thread_pool_size)
+            active++;
         if (active != prev) {
             av_thread_pool_set_active(active);
             av_log(NULL, AV_LOG_VERBOSE, "CPU pressure %.0f%%, %d active pool threads\n",

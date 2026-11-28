@@ -27,6 +27,7 @@
  * waiting lends the slot. A watchdog turns a deadlock into a failure.
  */
 
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -272,6 +273,7 @@ int main(void)
     avpriv_thread_pool_unblock();
     avpriv_thread_pool_leave();
     CHECK(av_thread_pool_set_active(1) == AVERROR(EINVAL));
+    CHECK(av_thread_pool_get_size() == 0);
 
     /* Before the pool exists, contexts get threads of their own and run all
      * jobs at once, so jobs may wait for any other job to start. */
@@ -282,6 +284,7 @@ int main(void)
     uninit(&t);
 
     CHECK(av_thread_pool_init(3) == 0);
+    CHECK(av_thread_pool_get_size() == 3);
     CHECK(av_thread_pool_init(3) == AVERROR(EEXIST));
 
     /* A main_func runs alongside the jobs, so it keeps threads of its own. */
@@ -312,6 +315,9 @@ int main(void)
 
     CHECK(max_slot_users() <= 3);
     CHECK(av_thread_pool_set_active(0) == AVERROR(EINVAL));
+    /* A larger slot limit leaves the physical worker count unchanged. */
+    CHECK(!av_thread_pool_set_active(INT_MAX));
+    CHECK(av_thread_pool_get_size() == 3);
     CHECK(!av_thread_pool_set_active(1));
     CHECK(max_slot_users() == 1);
 

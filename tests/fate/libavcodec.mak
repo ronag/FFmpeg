@@ -60,6 +60,11 @@ fate-golomb: libavcodec/tests/golomb$(EXESUF)
 fate-golomb: CMD = run libavcodec/tests/golomb$(EXESUF)
 fate-golomb: CMP = null
 
+FATE_LIBAVCODEC-$(HAVE_THREADS) += fate-frame-thread-pool
+fate-frame-thread-pool: libavcodec/tests/frame_thread_pool$(EXESUF)
+fate-frame-thread-pool: CMD = run libavcodec/tests/frame_thread_pool$(EXESUF)
+fate-frame-thread-pool: CMP = null
+
 FATE_LIBAVCODEC-$(CONFIG_DXV_ENCODER) += fate-hashtable
 fate-hashtable: libavcodec/tests/hashtable$(EXESUF)
 fate-hashtable: CMD = run libavcodec/tests/hashtable$(EXESUF)
