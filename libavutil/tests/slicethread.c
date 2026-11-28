@@ -21,10 +21,14 @@
  * pool: every job runs once, threadnr stays in range and unique among the
  * jobs running at once, errors propagate, and jobs that wait on jobs with a
  * lower jobnr finish with more callers than pool threads, also when a job
- * executes a nested context. A watchdog turns a deadlock into a failure.
+ * executes a nested context. Threads of their own that enter the pool get
+ * no more run slots at once than it has active threads, and newer "frames"
+ * that take every slot and then wait on older ones still finish, since
+ * waiting lends the slot. A watchdog turns a deadlock into a failure.
  */
 
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -177,6 +181,71 @@ static void *caller(void *arg)
     return NULL;
 }
 
+#define NB_FRAMES 8
+
+static atomic_int running, max_running;
+static atomic_int frame_done[NB_FRAMES];
+static AVMutex frame_lock = AV_MUTEX_INITIALIZER;
+static AVCond  frame_cond;
+
+/* Holds a run slot a few times, counting how many threads hold one at once. */
+static void *slot_user(void *arg)
+{
+    for (int i = 0; i < 20; i++) {
+        int n;
+
+        avpriv_slicethread_pool_enter();
+        n = atomic_fetch_add(&running, 1) + 1;
+        for (int m = atomic_load(&max_running); n > m && !atomic_compare_exchange_weak(&max_running, &m, n);)
+            ;
+        av_usleep(200);
+        atomic_fetch_sub(&running, 1);
+        avpriv_slicethread_pool_leave();
+    }
+    return NULL;
+}
+
+static int max_slot_users(void)
+{
+    pthread_t threads[8];
+
+    atomic_store(&max_running, 0);
+    for (int i = 0; i < FF_ARRAY_ELEMS(threads); i++)
+        CHECK(!pthread_create(&threads[i], NULL, slot_user, NULL));
+    for (int i = 0; i < FF_ARRAY_ELEMS(threads); i++)
+        pthread_join(threads[i], NULL);
+    return atomic_load(&max_running);
+}
+
+/* Like a frame thread: decodes frame n with a run slot, after waiting for
+ * frame n - 1, and runs a nested execute whose jobs wait on each other. */
+static void *frame(void *arg)
+{
+    int n = (intptr_t)arg;
+    Test t;
+
+    avpriv_slicethread_pool_enter();
+    if (n) {
+        avpriv_slicethread_pool_block();
+        ff_mutex_lock(&frame_lock);
+        while (!atomic_load(&frame_done[n - 1]))
+            ff_cond_wait(&frame_cond, &frame_lock);
+        ff_mutex_unlock(&frame_lock);
+        avpriv_slicethread_pool_unblock();
+    }
+    if (!init(&t, 4, 0, AVPRIV_SLICETHREAD_FLAG_SHARED)) {
+        t.chain = 1;
+        CHECK(!run(&t, 16));
+        uninit(&t);
+    }
+    ff_mutex_lock(&frame_lock);
+    atomic_store(&frame_done[n], 1);
+    ff_cond_broadcast(&frame_cond);
+    ff_mutex_unlock(&frame_lock);
+    avpriv_slicethread_pool_leave();
+    return NULL;
+}
+
 static void *watchdog(void *arg)
 {
     for (int i = 0; i < 600 && !atomic_load(&finished); i++)
@@ -195,6 +264,14 @@ int main(void)
 
     if (pthread_create(&watchdog_thread, NULL, watchdog, NULL))
         return 1;
+    ff_cond_init(&frame_cond, NULL);
+
+    /* Without the pool, run slots are no-ops. */
+    avpriv_slicethread_pool_enter();
+    avpriv_slicethread_pool_block();
+    avpriv_slicethread_pool_unblock();
+    avpriv_slicethread_pool_leave();
+    CHECK(av_slice_thread_pool_set_active(1) == AVERROR(EINVAL));
 
     /* Before the pool exists, contexts get threads of their own and run all
      * jobs at once, so jobs may wait for any other job to start. */
@@ -232,6 +309,25 @@ int main(void)
         CHECK(!pthread_create(&callers[i], NULL, caller, NULL));
     for (int i = 0; i < NB_CALLERS; i++)
         pthread_join(callers[i], NULL);
+
+    CHECK(max_slot_users() <= 3);
+    CHECK(av_slice_thread_pool_set_active(0) == AVERROR(EINVAL));
+    CHECK(!av_slice_thread_pool_set_active(1));
+    CHECK(max_slot_users() == 1);
+
+    /* With one slot, newer frames start first and take it, then wait on older
+     * frames that have not started. */
+    {
+        pthread_t frames[NB_FRAMES];
+        for (int i = NB_FRAMES - 1; i >= 0; i--)
+            CHECK(!pthread_create(&frames[i], NULL, frame, (void *)(intptr_t)i));
+        for (int i = 0; i < NB_FRAMES; i++)
+            pthread_join(frames[i], NULL);
+        for (int i = 0; i < NB_FRAMES; i++)
+            CHECK(atomic_load(&frame_done[i]));
+    }
+    CHECK(!av_slice_thread_pool_set_active(3));
+    CHECK(max_slot_users() <= 3);
 
     atomic_store(&finished, 1);
     pthread_join(watchdog_thread, NULL);

@@ -88,6 +88,16 @@ struct AVSliceThread {
  * last time, so state a job keeps per threadnr stays in that thread's cache.
  * Threads are not pinned to CPUs: the scheduler places them better than a
  * fixed mapping can on a shared, cpuset-limited host.
+ *
+ * The pool also has one run slot per thread. A lane runs only with a slot,
+ * and so do threads of their own that enter the pool, like frame threads,
+ * for each frame. A slot holder that waits for another holder lends its slot
+ * (avpriv_slicethread_pool_block()), and takes it back when it resumes
+ * without waiting, which may briefly run the pool over its size. So a
+ * thread waits for a slot only before it starts work, and every slot holder
+ * either runs, or waits for something that a running thread or a thread
+ * outside the pool does. Threads waiting to enter get slots before lanes,
+ * because a lane's execute finishes without them.
  */
 typedef struct PoolThread {
     pthread_t       thread;
@@ -104,9 +114,16 @@ static struct {
     int            *idle;           ///< idle thread indices, most recently busy last
     int             nb_idle;
     AVSliceThread  *queue;          ///< executes with lanes left, oldest first
+    int             nb_active;      ///< run slots in all, see av_slice_thread_pool_set_active()
+    int             slots;          ///< run slots left, below 0 while resumed threads run over
+    int             nb_slot_waiters;
+    pthread_cond_t  slot_cond;
 } pool;
 static atomic_int pool_ready;
 static AVMutex pool_init_lock = AV_MUTEX_INITIALIZER;
+
+/* Whether this thread holds a run slot, or lent it while it waits. */
+static _Thread_local int slot_held, slot_lent;
 
 static int auto_threads(int nb_threads)
 {
@@ -137,12 +154,19 @@ static void pool_run_lane(AVSliceThread *ctx, int lane)
     }
 }
 
+/* Whether a lane may take a run slot. */
+static int pool_slot_free(void)
+{
+    return pool.slots > 0 && !pool.nb_slot_waiters;
+}
+
 static void pool_join(PoolThread *t, AVSliceThread *ctx)
 {
     t->ctx  = ctx;
     t->lane = ctx->next_lane++;
     ctx->lane_thread[t->lane] = t - pool.threads;
     ctx->nb_joined++;
+    pool.slots--;
 }
 
 static void pool_queue_remove(AVSliceThread *ctx)
@@ -158,6 +182,8 @@ static void pool_queue_remove(AVSliceThread *ctx)
 /* Joins the oldest queued execute that still has jobs and lanes left. */
 static int pool_join_queued(PoolThread *t)
 {
+    if (!pool_slot_free())
+        return 0;
     while (pool.queue) {
         AVSliceThread *ctx = pool.queue;
 
@@ -171,6 +197,25 @@ static int pool_join_queued(PoolThread *t)
         return 1;
     }
     return 0;
+}
+
+/* Gives a run slot back: to a thread waiting to enter, or else to an idle
+ * thread for a queued execute if dispatch is set. */
+static void pool_put_slot(int dispatch)
+{
+    if (++pool.slots <= 0)
+        return;
+    if (pool.nb_slot_waiters) {
+        pthread_cond_signal(&pool.slot_cond);
+    } else if (dispatch && pool.nb_idle) {
+        PoolThread *t = &pool.threads[pool.idle[pool.nb_idle - 1]];
+
+        if (pool_join_queued(t)) {
+            pool.nb_idle--;
+            t->idle_pos = -1;
+            pthread_cond_signal(&t->cond);
+        }
+    }
 }
 
 static void *attribute_align_arg pool_thread(void *arg)
@@ -194,12 +239,16 @@ static void *attribute_align_arg pool_thread(void *arg)
         lane = t->lane;
         pthread_mutex_unlock(&pool.lock);
 
+        slot_held = 1;
         pool_run_lane(ctx, lane);
+        slot_held = 0;
 
         pthread_mutex_lock(&pool.lock);
         t->ctx = NULL;
         if (!--ctx->nb_joined)
             pthread_cond_signal(&ctx->done_cond);
+        /* This thread looks for queued lanes itself. */
+        pool_put_slot(0);
     }
     return NULL;
 }
@@ -216,7 +265,7 @@ static int pool_execute(AVSliceThread *ctx, int nb_jobs)
 
         pthread_mutex_lock(&pool.lock);
         ctx->next_lane = 1;
-        while (ctx->next_lane < ctx->nb_lanes && pool.nb_idle) {
+        while (ctx->next_lane < ctx->nb_lanes && pool.nb_idle && pool_slot_free()) {
             int last = ctx->lane_thread[ctx->next_lane];
             int idx  = last >= 0 && pool.threads[last].idle_pos >= 0 ? last
                                                                     : pool.idle[pool.nb_idle - 1];
@@ -250,11 +299,23 @@ static int pool_execute(AVSliceThread *ctx, int nb_jobs)
     pool_run_lane(ctx, 0);
 
     if (ctx->nb_lanes > 1) {
+        int lend;
+
         pthread_mutex_lock(&pool.lock);
         if (ctx->queued)
             pool_queue_remove(ctx);
+        /* A slot holder executing a nested context waits for other holders. */
+        lend = slot_held && ctx->nb_joined;
+        if (lend) {
+            slot_held = 0;
+            pool_put_slot(1);
+        }
         while (ctx->nb_joined)
             pthread_cond_wait(&ctx->done_cond, &pool.lock);
+        if (lend) {
+            pool.slots--;
+            slot_held = 1;
+        }
         pthread_mutex_unlock(&pool.lock);
     }
 
@@ -286,6 +347,11 @@ int av_slice_thread_pool_init(int nb_threads)
         ret = AVERROR(ret);
         goto fail;
     }
+    if ((ret = pthread_cond_init(&pool.slot_cond, NULL))) {
+        pthread_mutex_destroy(&pool.lock);
+        ret = AVERROR(ret);
+        goto fail;
+    }
 
     pthread_mutex_lock(&pool.lock);
     for (int i = 0; i < nb_threads; i++) {
@@ -300,10 +366,12 @@ int av_slice_thread_pool_init(int nb_threads)
         }
         pool.nb_threads++;
     }
+    pool.slots = pool.nb_active = pool.nb_threads;
     pthread_mutex_unlock(&pool.lock);
 
     /* With some threads started, the pool works with fewer. */
     if (!pool.nb_threads) {
+        pthread_cond_destroy(&pool.slot_cond);
         pthread_mutex_destroy(&pool.lock);
         ret = AVERROR(ret);
         goto fail;
@@ -318,6 +386,74 @@ fail:
 end:
     ff_mutex_unlock(&pool_init_lock);
     return ret;
+}
+
+int av_slice_thread_pool_set_active(int nb_active)
+{
+    if (nb_active < 1)
+        return AVERROR(EINVAL);
+    if (!atomic_load_explicit(&pool_ready, memory_order_acquire))
+        return AVERROR(EINVAL);
+
+    pthread_mutex_lock(&pool.lock);
+    /* Fewer slots take effect as holders give theirs back. */
+    if (nb_active < pool.nb_active)
+        pool.slots -= pool.nb_active - nb_active;
+    else
+        for (int i = pool.nb_active; i < nb_active; i++)
+            pool_put_slot(1);
+    pool.nb_active = nb_active;
+    pthread_mutex_unlock(&pool.lock);
+    return 0;
+}
+
+void avpriv_slicethread_pool_enter(void)
+{
+    if (slot_held || !atomic_load_explicit(&pool_ready, memory_order_acquire))
+        return;
+
+    pthread_mutex_lock(&pool.lock);
+    pool.nb_slot_waiters++;
+    while (pool.slots <= 0)
+        pthread_cond_wait(&pool.slot_cond, &pool.lock);
+    pool.nb_slot_waiters--;
+    pool.slots--;
+    if (pool.slots > 0 && pool.nb_slot_waiters)
+        pthread_cond_signal(&pool.slot_cond);
+    pthread_mutex_unlock(&pool.lock);
+    slot_held = 1;
+}
+
+void avpriv_slicethread_pool_leave(void)
+{
+    if (!slot_held)
+        return;
+    slot_held = 0;
+    pthread_mutex_lock(&pool.lock);
+    pool_put_slot(1);
+    pthread_mutex_unlock(&pool.lock);
+}
+
+void avpriv_slicethread_pool_block(void)
+{
+    if (!slot_held)
+        return;
+    slot_held = 0;
+    slot_lent = 1;
+    pthread_mutex_lock(&pool.lock);
+    pool_put_slot(1);
+    pthread_mutex_unlock(&pool.lock);
+}
+
+void avpriv_slicethread_pool_unblock(void)
+{
+    if (!slot_lent)
+        return;
+    slot_lent = 0;
+    slot_held = 1;
+    pthread_mutex_lock(&pool.lock);
+    pool.slots--;
+    pthread_mutex_unlock(&pool.lock);
 }
 
 static int run_jobs(AVSliceThread *ctx)
@@ -647,6 +783,16 @@ int av_slice_thread_pool_init(int nb_threads)
 {
     return AVERROR(ENOSYS);
 }
+
+int av_slice_thread_pool_set_active(int nb_active)
+{
+    return AVERROR(ENOSYS);
+}
+
+void avpriv_slicethread_pool_enter(void) {}
+void avpriv_slicethread_pool_leave(void) {}
+void avpriv_slicethread_pool_block(void) {}
+void avpriv_slicethread_pool_unblock(void) {}
 
 int avpriv_slicethread_execute2(AVSliceThread *ctx, int nb_jobs, int execute_main)
 {
