@@ -42,6 +42,7 @@
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "libavutil/avutil.h"
+#include "libavutil/cpu.h"
 #include "libavutil/mathematics.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
@@ -465,6 +466,20 @@ static int opt_filter_threads(void *optctx, const char *opt, const char *arg)
     av_free(filter_nbthreads);
     filter_nbthreads = av_strdup(arg);
     return 0;
+}
+
+static int opt_slice_thread_pool(void *optctx, const char *opt, const char *arg)
+{
+    double nb_threads;
+    int ret = parse_number(opt, arg, OPT_TYPE_INT, 0, INT_MAX, &nb_threads);
+    if (ret < 0)
+        return ret;
+
+    ret = av_slice_thread_pool_init(nb_threads);
+    if (ret < 0)
+        av_log(NULL, AV_LOG_ERROR, "Failed to create the slice thread pool: %s\n",
+               av_err2str(ret));
+    return ret;
 }
 
 static int opt_filter_buffered_frames(void *optctx, const char *opt, const char *arg)
@@ -1778,6 +1793,9 @@ const OptionDef options[] = {
     { "filter_threads",         OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_filter_threads },
         "number of non-complex filter threads" },
+    { "slice_thread_pool",      OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
+        { .func_arg = opt_slice_thread_pool },
+        "share one pool of slice threads between all decoders, encoders, filters and scalers", "nb_threads" },
     { "filter_buffered_frames", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_filter_buffered_frames },
         "maximum number of buffered audio/video frames in a filter graph", "nb_frames" },
