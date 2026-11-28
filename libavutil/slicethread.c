@@ -328,8 +328,9 @@ int av_thread_pool_init(int nb_threads)
 
     if (nb_threads < 0)
         return AVERROR(EINVAL);
+    /* av_cpu_count() returns 0 or less when it cannot count the CPUs. */
     if (!nb_threads)
-        nb_threads = av_cpu_count();
+        nb_threads = FFMAX(av_cpu_count(), 1);
 
     ff_mutex_lock(&pool_init_lock);
     if (atomic_load_explicit(&pool_ready, memory_order_relaxed)) {
