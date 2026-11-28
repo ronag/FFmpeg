@@ -335,6 +335,7 @@ TESTPROGS = adler32                                                     \
 
 TESTPROGS-$(CONFIG_CUDA)             += hwcontext_cuda
 TESTPROGS-$(HAVE_THREADS)            += cpu_init
+TESTPROGS-$(HAVE_THREADS)            += slicethread
 TESTPROGS-$(HAVE_LZO1X_999_COMPRESS) += lzo
 
 TOOLS = crypto_bench ffhash ffeval ffescape

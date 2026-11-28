@@ -39,6 +39,30 @@ int avpriv_slicethread_create2(AVSliceThread **pctx, void *priv,
                                int nb_threads);
 
 /**
+ * The jobs of one execute may run on the process-wide slice thread pool
+ * (av_slice_thread_pool_init()) instead of threads of the context's own.
+ *
+ * On the pool, an execute may get fewer threads than nb_threads, down to
+ * just the calling thread, which claims jobs in jobnr order until none are
+ * left. So a job may wait on a job with a lower jobnr of the same execute,
+ * but never on one with a higher jobnr, and never on a job of another
+ * execute. threadnr still stays below nb_threads and is unique among the
+ * jobs of one execute that run at the same time.
+ *
+ * Ignored with a main_func, which runs alongside the jobs and so needs
+ * threads of its own.
+ */
+#define AVPRIV_SLICETHREAD_FLAG_SHARED (1 << 0)
+
+/**
+ * Like avpriv_slicethread_create2(), with AVPRIV_SLICETHREAD_FLAG_* flags.
+ */
+int avpriv_slicethread_create3(AVSliceThread **pctx, void *priv,
+                               int (*worker_func)(void *priv, int jobnr, int threadnr, int nb_jobs, int nb_threads),
+                               int (*main_func)(void *priv),
+                               int nb_threads, unsigned flags);
+
+/**
  * Execute slice threading. If any job returns a nonzero value,
  * all remaining jobs will be aborted and that value returned.
  *

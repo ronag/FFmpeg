@@ -69,6 +69,11 @@ fate-cpu_init: libavutil/tests/cpu_init$(EXESUF)
 fate-cpu_init: CMD = run libavutil/tests/cpu_init$(EXESUF)
 fate-cpu_init: CMP = null
 
+FATE_LIBAVUTIL-$(HAVE_THREADS) += fate-slicethread
+fate-slicethread: libavutil/tests/slicethread$(EXESUF)
+fate-slicethread: CMD = run libavutil/tests/slicethread$(EXESUF)
+fate-slicethread: CMP = null
+
 FATE_LIBAVUTIL += fate-crc
 fate-crc: libavutil/tests/crc$(EXESUF)
 fate-crc: CMD = run libavutil/tests/crc$(EXESUF)

@@ -141,6 +141,22 @@ int av_cpu_count(void);
 void av_cpu_force_count(int count);
 
 /**
+ * Make slice threading in codecs, filter graphs and swscale share one
+ * process-wide pool of threads, instead of each context starting threads of
+ * its own. Only contexts created after this call use the pool. Each still
+ * runs at most as many jobs at once as its own thread count, and a context
+ * whose jobs must all run at once keeps threads of its own.
+ *
+ * The pool exists until the process exits. Do not fork() after calling this.
+ *
+ * @param nb_threads number of pool threads, 0 for one per CPU
+ * @return 0 on success, AVERROR(EEXIST) if the pool already exists,
+ *         AVERROR(ENOSYS) without thread support, or another negative
+ *         AVERROR if no thread could be started
+ */
+int av_slice_thread_pool_init(int nb_threads);
+
+/**
  * Get the maximum data alignment that may be required by FFmpeg.
  *
  * Note that this is affected by the build configuration and the CPU flags mask,
